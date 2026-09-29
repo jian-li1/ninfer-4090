@@ -7,6 +7,7 @@
 #include "serve/openai_common.h"
 #include "serve/request_log.h"
 #include "serve/slot_files.h"
+#include "ui.h"
 
 #include <nlohmann/json.hpp>
 
@@ -496,6 +497,29 @@ void HttpServer::register_routes() {
     server_.Post(R"(/slots/(\d+))", [this](const httplib::Request& req, httplib::Response& res) {
         handle_slot_action(req, res);
     });
+    server_.Get("/props", [this](const httplib::Request&, httplib::Response& res) {
+        const std::uint32_t slot_count =
+            service_ != nullptr ? service_->slot_count() : options_.max_concurrency;
+        nlohmann::json props = {
+            {"default_generation_settings",
+             {{"n_ctx", options_.max_context},
+              {"n_predict", -1},
+              {"params",
+               {{"n_predict", -1}, {"max_tokens", options_.default_max_tokens}}}}},
+            {"total_slots", slot_count},
+            {"model_alias", public_model_id_},
+            {"modalities",
+             {{"vision", options_.enable_vision}, {"video", false}, {"audio", false}}},
+            {"endpoint_slots", true},
+            {"endpoint_props", true},
+            {"endpoint_metrics", true},
+            {"ui", options_.enable_ui},
+        };
+        res.set_content(props.dump(), "application/json");
+    });
+    server_.Get("/models", [this](const httplib::Request& req, httplib::Response& res) {
+        handle_models(req, res);
+    });
     server_.Get("/v1/models", [this](const httplib::Request& req, httplib::Response& res) {
         handle_models(req, res);
     });
@@ -540,6 +564,55 @@ void HttpServer::register_routes() {
     server_.Post("/v1/messages", [this](const httplib::Request& req, httplib::Response& res) {
         handle_messages(req, res);
     });
+
+    if (options_.enable_ui && ninfer_ui_has_assets()) {
+        const auto serve_asset = [](const std::string& name, httplib::Response& res,
+                                    const httplib::Request& req) {
+            const NinferUiAsset* asset = ninfer_ui_find_asset(name);
+            if (asset == nullptr) { asset = ninfer_ui_find_asset("index.html"); }
+            if (asset == nullptr) {
+                res.status = 404;
+                return;
+            }
+            res.set_header("ETag", asset->etag);
+            const std::string if_none_match = req.get_header_value("If-None-Match");
+            if (!if_none_match.empty() &&
+                (if_none_match == asset->etag || if_none_match == "W/" + asset->etag)) {
+                res.status = 304;
+                return;
+            }
+            res.set_header("Cache-Control", asset->name == "index.html"
+                                                ? "no-cache"
+                                                : "max-age=31536000, immutable");
+            res.set_content(reinterpret_cast<const char*>(asset->data), asset->size,
+                            asset->type.c_str());
+        };
+
+        server_.Get("/", [serve_asset](const httplib::Request& req, httplib::Response& res) {
+            serve_asset("index.html", res, req);
+        });
+        server_.Get("/index.html",
+                    [serve_asset](const httplib::Request& req, httplib::Response& res) {
+                        serve_asset("index.html", res, req);
+                    });
+        server_.Get(R"(/([^/].*))",
+                    [serve_asset](const httplib::Request& req, httplib::Response& res) {
+                        const std::string path = req.matches[1];
+                        if (path.rfind("v1/", 0) == 0 || path == "health" || path == "metrics" ||
+                            path == "slots" || path.rfind("slots/", 0) == 0 || path == "props" ||
+                            path == "models") {
+                            res.status = 404;
+                            return;
+                        }
+                        if (ninfer_ui_find_asset(path) != nullptr) {
+                            serve_asset(path, res, req);
+                        } else if (path.find('.') == std::string::npos) {
+                            serve_asset("index.html", res, req);
+                        } else {
+                            res.status = 404;
+                        }
+                    });
+    }
 }
 
 void HttpServer::handle_models(const httplib::Request&, httplib::Response& res) const {

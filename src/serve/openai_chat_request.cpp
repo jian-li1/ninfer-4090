@@ -910,11 +910,12 @@ OpenAIChatRequest parse_chat_completion_request(const Json& body, const RequestL
     validate_compatibility_hints(body);
 
     OpenAIChatRequest output;
-    if (!body.contains("model") || !body.at("model").is_string() ||
-        body.at("model").get<std::string>().empty()) {
-        bad_request("missing required field: model", "model");
+    if (body.contains("model") && !body.at("model").is_null()) {
+        if (!body.at("model").is_string()) {
+            bad_request("invalid field type: model must be a string", "model");
+        }
+        output.model = body.at("model").get<std::string>();
     }
-    output.model = body.at("model").get<std::string>();
 
     const OpenAIPromptCachePolicy cache_policy = parse_openai_prompt_cache_policy(body);
 
