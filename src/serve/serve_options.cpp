@@ -84,6 +84,7 @@ std::string serve_usage_text(const char* argv0) {
            "[--max-private-continuations N] [--max-shared-prefixes N] "
            "[--max-long-anchors-per-continuation N] [--auto-long-anchors N] "
            "[--request-log-jsonl FILE] [--slot-save-path DIR] [--auto-save-evicted] "
+           "[--cache-dir DIR] [--cache-dir-max N] "
            "[--response-store-max-records N] [--response-store-max-mib N] "
            "[--kv-dtype bf16|int8|fp8|nvfp4|k8v4|rk8v4|rk4v4|rk4v4-e8|rk2v4-e8] "
            "[--spec mtp|dflash|dflash2 --draft-tokens N] "
@@ -105,6 +106,10 @@ std::string serve_usage_text(const char* argv0) {
            "       --slot-save-path enables llama.cpp-style session persistence: POST "
            "/slots/{id}?action=save|restore|erase with {\"filename\": NAME} moves one idle "
            "slot's resident session to or from DIR (disabled when omitted)\n"
+           "       --cache-dir transparently saves and restores text-prefix sessions across "
+           "server restarts; v1 requires --max-concurrency 1\n"
+           "       --cache-dir-max N limits automatic persistent entries to N MiB; 0 means "
+           "unlimited\n"
            "       --turn-checkpoints is RETIRED and has no effect. Per-sequence rewrite "
            "checkpoints and long anchors serve the same mid-history divergence, sized by "
            "--max-long-anchors-per-continuation and placed by --auto-long-anchors; the value is "
@@ -159,6 +164,7 @@ ServeOptions parse_serve_options(int argc, char** argv) {
     bool default_max_tokens_explicit = false;
     bool kv_capacity_explicit        = false;
     bool context_capacity_explicit   = false;
+    bool cache_dir_max_explicit      = false;
     if (argc >= 2 && (std::string(argv[1]) == "--help" || std::string(argv[1]) == "-h")) {
         options.help_requested = true;
         return options;
@@ -288,6 +294,19 @@ ServeOptions parse_serve_options(int argc, char** argv) {
             if (options.slot_save_path.empty()) {
                 throw std::invalid_argument("--slot-save-path must not be empty");
             }
+        } else if (arg == "--cache-dir") {
+            options.cache_dir = require_value("--cache-dir");
+            if (options.cache_dir.empty()) {
+                throw std::invalid_argument("--cache-dir must not be empty");
+            }
+        } else if (arg == "--cache-dir-max") {
+            options.cache_dir_max_mib =
+                parse_u64(require_value("--cache-dir-max"), "cache-dir-max");
+            cache_dir_max_explicit = true;
+            if (options.cache_dir_max_mib >
+                (std::numeric_limits<std::uint64_t>::max() >> 20)) {
+                throw std::invalid_argument("--cache-dir-max is out of range");
+            }
         } else if (arg == "--response-store-max-records") {
             const int records = parse_nonnegative_int(require_value("--response-store-max-records"),
                                                       "response-store-max-records");
@@ -383,6 +402,15 @@ ServeOptions parse_serve_options(int argc, char** argv) {
     if (options.auto_save_evicted && options.slot_save_path.empty()) {
         throw std::invalid_argument("--auto-save-evicted requires --slot-save-path");
     }
+    if (cache_dir_max_explicit && options.cache_dir.empty()) {
+        throw std::invalid_argument("--cache-dir-max requires --cache-dir");
+    }
+    if (!options.cache_dir.empty() && !options.allow_prefix_reuse) {
+        throw std::invalid_argument("--cache-dir cannot be combined with --no-prefix-reuse");
+    }
+    if (!options.cache_dir.empty() && options.auto_save_evicted) {
+        throw std::invalid_argument("--cache-dir cannot be combined with --auto-save-evicted");
+    }
     if (!options.allow_prefix_reuse) {
         if (context_capacity_explicit) {
             throw std::invalid_argument(
@@ -403,6 +431,9 @@ ServeOptions parse_serve_options(int argc, char** argv) {
     }
     if (options.max_concurrency == 0 || options.max_concurrency > kMaximumConcurrency) {
         throw std::invalid_argument("--max-concurrency must be in [1,8]");
+    }
+    if (!options.cache_dir.empty() && options.max_concurrency != 1) {
+        throw std::invalid_argument("--cache-dir v1 requires --max-concurrency 1");
     }
     if (options.max_pending_requests == 0) {
         throw std::invalid_argument("--max-pending-requests must be positive");

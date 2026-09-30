@@ -111,6 +111,33 @@ save. Sessions never saved or restored have no binding and are not spilled; an e
 `erase` is a deletion request and never auto-saves. The console reports each spill as
 `slot auto-save file=... n_saved=...`.
 
+### Transparent persistent prefix cache
+
+`--cache-dir DIR` enables automatic text-prefix reuse across server restarts. After every
+completed text generation that retained a session, Serve writes the Engine's native snapshot and
+an exact rendered-token sidecar below `DIR/entries`. Before submitting a later text request, it
+finds the longest sidecar that is an exact prefix, restores that snapshot into an idle retained
+catalog cell, and then lets the normal Engine planner verify and select among all resident
+candidates. Media prompts do not participate because token IDs alone do not identify their patch
+payloads.
+
+Native snapshot validation remains authoritative: incompatible weights, KV geometry/dtype,
+speculative settings, corrupt payloads, and sidecar identity mismatches are rejected and removed.
+Snapshot and sidecar publication use temporary files plus rename; startup removes incomplete
+staging/orphan files. `--cache-dir-max N` bounds snapshot plus sidecar storage in MiB with
+least-recently-used eviction; `0` is unlimited. Use a cache directory dedicated to one model and
+runtime configuration even though native validation prevents an incompatible restore.
+
+This v1 requires `--max-concurrency 1`, prefix reuse enabled, and cannot be combined with
+`--auto-save-evicted`. It is write-through at request completion so a supervisor can stop Serve as
+soon as the response completes without losing the latest session. The tradeoff is terminal latency:
+large snapshots are copied from the GPU and written before an aggregate response returns (or before
+a streaming response closes). Cache I/O failure is logged but never changes an already completed
+generation into an HTTP failure.
+
+Example: `--cache-dir /var/cache/ninfer/qwen3.8-27b --cache-dir-max 32768` keeps up to 32 GiB.
+Manual `--slot-save-path` and `/slots` operations remain available independently.
+
 `GET /health` returns HTTP 200 with `{"status":"ok"}` while the Engine can accept work. After an
 Engine-wide failure it returns HTTP 503 with `{"status":"unavailable"}`. Temporary queue
 saturation does not make the Engine unavailable. The endpoint remains unauthenticated.
@@ -823,6 +850,8 @@ The table lists executable defaults. The startup example selects a long-context 
 | `--media-preprocess-threads N` | bounded media preprocessing workers; `0` selects at most 16 from host concurrency | `0` |
 | `--request-log-jsonl FILE` | append full-precision server/request records | disabled |
 | `--slot-save-path DIR` | enable `/slots/{id}?action=save\|restore\|erase` session persistence into DIR | disabled |
+| `--cache-dir DIR` | transparent text-prefix snapshot lookup and write-through persistence; v1 requires concurrency 1 | disabled |
+| `--cache-dir-max N` | persistent-cache LRU limit in MiB; `0` is unlimited | `0` |
 | `--turn-checkpoints N` | retained turn checkpoints per slot for mid-history prompt reuse; see [turn-checkpoint-ring.md](turn-checkpoint-ring.md) | `0` |
 | `--auto-save-evicted` | spill an involuntarily evicted session back to its bound slot file; requires `--slot-save-path` | off |
 | `--response-store-max-records N` | maximum locally retained Responses objects | `1024` |
@@ -894,7 +923,7 @@ in append mode and flushes every event, so successive model or MTP blocks may sh
 file. The parent directory must already exist. Failure to open the file aborts startup; the log path
 is also rejected if it resolves to the model artifact.
 
-Every line is one `ninfer_serve_request_log` schema-v20 JSON object. All events carry
+Every line is one `ninfer_serve_request_log` schema-v21 JSON object. All events carry
 `timestamp_unix_ms` and a process-unique `server_instance_id`; request IDs are monotonic only within
 that server instance. Successful request-start records include request-scoped acquisition,
 media-preprocessing wall/work, tokenizer, cache hit/miss/single-flight, and payload-size fields;
@@ -902,7 +931,7 @@ they do not infer request behavior from process-global counter deltas.
 
 | Event | Contents |
 |---|---|
-| `server_start` | target/weights identity and artifact, resolved Engine and context-cache capacities, registered thinking/non-thinking sampler defaults plus process overrides, thinking-history and thinking-budget defaults, Device arenas, the optional non-additive Vision layout inside the unified workspace, Host State/KV capacity and occupancy, KV sizing ledger, CUDA Graph allowance, CUDA/GPU environment, and redacted argv |
+| `server_start` | target/weights identity and artifact, resolved Engine and context-cache capacities, persistent-cache directory/limit, registered thinking/non-thinking sampler defaults plus process overrides, thinking-history and thinking-budget defaults, Device arenas, the optional non-additive Vision layout inside the unified workspace, Host State/KV capacity and occupancy, KV sizing ledger, CUDA Graph allowance, CUDA/GPU environment, and redacted argv |
 | `request_start` | protocol, resolved sampler and seed, requested and effective reasoning effort, thinking mode and optional budget, Responses semantic-change flag, output budget, stream/message/tool shape |
 | `request_rejected` | parsed request shape, requested reasoning effort with unresolved effective value, media-item count, `phase: "prepare"`, and the exact HTTP status/type/code/parameter/message for a synchronous preparation rejection |
 | `request_done` | finish reason, prompt/completion/cache/computed-prefill tokens, prefix reuse path, tool-call parse diagnostics, request-owned materialization cost/search diagnostics, thinking-budget application counters, unrounded request-stage seconds, per-request Engine Host exposure, and complete speculative-decoding counters |

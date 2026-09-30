@@ -464,6 +464,8 @@ std::string format_server_start_json(
                                                           {"media_preprocess_threads", options.media_preprocess_threads},
                                                           {"request_log_jsonl", options.request_log_jsonl},
                                                           {"slot_save_path", options.slot_save_path},
+                                                          {"cache_dir", options.cache_dir},
+                                                          {"cache_dir_max_mib", options.cache_dir_max_mib},
                                                           {"default_output_tokens", options.default_max_tokens},
                                                           {"default_thinking", options.enable_thinking},
                                                           {"default_thinking_budget", std::move(default_thinking_budget)},

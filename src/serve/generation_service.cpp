@@ -281,6 +281,17 @@ GenerationService::GenerationService(ServeOptions options, StartupObserver start
         resolve_automatic_private_anchors(options_, engine_->options().context_cache);
     request_capacity_    = std::make_shared<RequestCapacity>(
         static_cast<std::size_t>(options_.max_concurrency) + options_.max_pending_requests);
+    if (!options_.cache_dir.empty()) {
+        const std::uint64_t max_bytes =
+            options_.cache_dir_max_mib == 0 ? 0 : options_.cache_dir_max_mib << 20;
+        persistent_cache_ =
+            std::make_unique<PersistentPromptCache>(options_.cache_dir, max_bytes);
+        if (logger_) {
+            logger_->info("{}", "persistent KV cache enabled dir=" + options_.cache_dir +
+                                    " max_mib=" +
+                                    std::to_string(options_.cache_dir_max_mib));
+        }
+    }
 }
 
 std::shared_ptr<RequestLifetime>
@@ -310,6 +321,105 @@ GenerationService::acquire_request_lifetime(DeadlinePolicy deadline_policy) cons
 std::size_t GenerationService::active_request_count() const {
     const std::lock_guard lock(request_capacity_->mutex);
     return request_capacity_->active;
+}
+
+void GenerationService::maybe_restore_persistent_prefix(
+    std::span<const ninfer::TokenId> tokens) const {
+    if (persistent_cache_ == nullptr || tokens.empty()) { return; }
+
+    const std::vector<ninfer::SlotState> states = engine_->slot_states();
+    if (states.empty()) { return; }
+    for (const ninfer::SlotState& state : states) {
+        if (state.processing) { return; }
+    }
+
+    std::size_t best_resident_prefix = 0;
+    std::optional<std::uint32_t> empty_slot;
+    std::optional<std::uint32_t> weakest_known_slot;
+    std::size_t weakest_known_prefix = 0;
+    bool unknown_resident            = false;
+    for (std::uint32_t slot = 0; slot < states.size(); ++slot) {
+        const ninfer::SlotState& state = states[slot];
+        if (!state.retained) {
+            if (!empty_slot) { empty_slot = slot; }
+            continue;
+        }
+        if (state.session_digest.empty()) {
+            unknown_resident = true;
+            continue;
+        }
+        const std::optional<std::size_t> prefix =
+            persistent_cache_->prefix_for_digest(state.session_digest, tokens);
+        if (!prefix) {
+            unknown_resident = true;
+            continue;
+        }
+        best_resident_prefix = std::max(best_resident_prefix, *prefix);
+        if (!weakest_known_slot || *prefix < weakest_known_prefix) {
+            weakest_known_slot   = slot;
+            weakest_known_prefix = *prefix;
+        }
+    }
+
+    for (;;) {
+        const std::optional<PersistentPromptCache::Match> match =
+            persistent_cache_->longest_prefix(tokens);
+        if (!match || match->tokens <= best_resident_prefix) { return; }
+
+        // Prefer a vacant catalog cell. If all cells are occupied, retain at least one known-good
+        // resident while replacing the weakest known entry. Never evict the only resident or an
+        // unindexed resident merely to probe a disk file that native validation may reject.
+        std::optional<std::uint32_t> destination = empty_slot;
+        if (!destination && states.size() > 1 && !unknown_resident) {
+            destination = weakest_known_slot;
+        }
+        if (!destination) { return; }
+
+        try {
+            const ninfer::SlotRestoreResult restored =
+                engine_->restore_slot(*destination, match->snapshot_path.string());
+            if (restored.session_digest != match->digest || restored.tokens != match->tokens) {
+                persistent_cache_->invalidate(*match);
+                try {
+                    (void)engine_->erase_slot(*destination, restored.session_digest);
+                } catch (...) {}
+                if (logger_) {
+                    logger_->warn("{}", "persistent KV cache rejected sidecar identity file=" +
+                                           match->snapshot_path.string());
+                }
+                empty_slot = destination;
+                continue;
+            }
+            if (logger_) {
+                logger_->info("{}", "persistent KV cache restored tokens=" +
+                                       std::to_string(restored.tokens) + " bytes=" +
+                                       std::to_string(restored.bytes) + " file=" +
+                                       match->snapshot_path.string());
+            }
+            return;
+        } catch (const ninfer::RequestError& exception) {
+            // A request can reach the Engine queue between the published slot snapshot and the
+            // restore claim. The entry is still valid; defer it to a later idle request.
+            if (logger_) {
+                logger_->debug("{}", std::string("persistent KV cache restore deferred: ") +
+                                         exception.what());
+            }
+            return;
+        } catch (const std::invalid_argument& exception) {
+            if (logger_) {
+                logger_->warn("{}", "persistent KV cache rejected file=" +
+                                       match->snapshot_path.string() + ": " + exception.what());
+            }
+            persistent_cache_->invalidate(*match);
+            empty_slot = destination;
+        } catch (const std::exception& exception) {
+            if (logger_) {
+                logger_->warn("{}", "persistent KV cache restore failed file=" +
+                                       match->snapshot_path.string() + ": " + exception.what());
+            }
+            return;
+        }
+    }
 }
 
 PreparedRequest GenerationService::prepare(const GenerationRequest& request,
@@ -381,6 +491,21 @@ PreparedRequest GenerationService::prepare_impl(const GenerationRequest& request
         check_preparation_control(prepared.lifetime->deadline, is_cancelled);
         prepared.prompt_tokens = static_cast<int>(prompt.summary().prompt_tokens);
         prepared.preparation   = prompt.preparation_stats();
+        std::unique_lock<std::mutex> persistent_cache_lock;
+        if (persistent_cache_ != nullptr) {
+            persistent_cache_lock =
+                std::unique_lock<std::mutex>(persistent_cache_operation_mutex_);
+        }
+        if (persistent_cache_lock && cache_participation == CacheParticipation::ReadWrite &&
+            !prompt.summary().has_media) {
+            const std::span<const ninfer::TokenId> token_ids = prompt.token_ids();
+            prepared.persistent_cache_prompt_tokens.assign(token_ids.begin(), token_ids.end());
+            // This request already owns one lifetime count. More than one means another prepare,
+            // queued request, generation, or un-released response could race slot replacement.
+            if (active_request_count() == 1) {
+                maybe_restore_persistent_prefix(prepared.persistent_cache_prompt_tokens);
+            }
+        }
         prepared.prepare_seconds =
             std::chrono::duration<double>(Clock::now() - prepared.lifetime->started).count();
         prepared.generation = engine_->submit(std::move(prompt), std::move(request_options),
@@ -448,6 +573,40 @@ GenerationOutcome GenerationService::run(PreparedRequest& prepared, const Stream
     try {
         result = prepared.generation.wait(public_sink, cancellation);
     } catch (const ninfer::RequestError& exception) { throw_request_error(exception); }
+
+    if (persistent_cache_ != nullptr && !prepared.persistent_cache_prompt_tokens.empty() &&
+        result.slot >= 0 && !result.session_digest.empty()) {
+        try {
+            std::vector<ninfer::TokenId> ledger;
+            ledger.reserve(prepared.persistent_cache_prompt_tokens.size() +
+                           result.generated_token_ids.size());
+            ledger.insert(ledger.end(), prepared.persistent_cache_prompt_tokens.begin(),
+                          prepared.persistent_cache_prompt_tokens.end());
+            ledger.insert(ledger.end(), result.generated_token_ids.begin(),
+                          result.generated_token_ids.end());
+
+            std::lock_guard lock(persistent_cache_operation_mutex_);
+            persistent_cache_->store(
+                ledger, result.session_digest,
+                [&](const std::filesystem::path& path, std::string_view digest) {
+                    return engine_->save_slot(static_cast<std::uint32_t>(result.slot), path.string(),
+                                              std::string(digest));
+                });
+            if (logger_) {
+                logger_->info("{}", "persistent KV cache saved slot=" +
+                                       std::to_string(result.slot) + " tokens=" +
+                                       std::to_string(ledger.size()));
+            }
+        } catch (const std::exception& exception) {
+            // Persistence is write-through for durability, but it is not part of the inference
+            // result contract. A slot race or disk failure must not convert completed work to 5xx.
+            if (logger_) {
+                logger_->warn("{}", std::string("persistent KV cache save failed: ") +
+                                       exception.what());
+            }
+        }
+    }
+
     GenerationOutcome outcome;
     outcome.text                = std::move(result.content);
     outcome.reasoning           = std::move(result.reasoning);

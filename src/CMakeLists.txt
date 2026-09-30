@@ -409,6 +409,7 @@ if(NINFER_BUILD_SERVE)
     serve/openai_responses_store.cpp
     serve/translate.cpp
     serve/generation_service.cpp
+    serve/persistent_prompt_cache.cpp
     serve/request_events.cpp
     serve/operational_log.cpp
     serve/request_log.cpp

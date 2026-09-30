@@ -5,6 +5,7 @@
 #include <chrono>
 #include <cstdint>
 #include <memory>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -24,6 +25,8 @@ public:
 
     [[nodiscard]] const PromptSummary& summary() const noexcept;
     [[nodiscard]] const PromptPreparationStats& preparation_stats() const noexcept;
+    // Exact rendered text-token ledger. Valid until this PreparedPrompt is moved or consumed.
+    [[nodiscard]] std::span<const TokenId> token_ids() const noexcept;
     [[nodiscard]] explicit operator bool() const noexcept;
 
 private:
