@@ -49,6 +49,13 @@ int q4_a16_conformance() {
     failures += run_shape("Q4_A16", ActivationCompute::A16, make_q4g64_f16s_weight,
                           {34816, 5120, 113U, Comparison::Sampled, false, kN34816K5120});
 
+    // Gemma 4's K=5376 has 84 G64 groups. T=1 must not use the K=5120-only static 80-group
+    // schedule; compare both the decode and multi-token routes directly with decoded FP64 weights.
+    constexpr std::array kGemmaN16384K5376{a16(1), a16(7)};
+    failures += run_shape("Q4_A16", ActivationCompute::A16, make_q4g64_f16s_weight,
+                          {16384, 5376, 117U, Comparison::Sampled, false,
+                           kGemmaN16384K5376});
+
     constexpr std::array kN131072K5120{
         a16(1), a16(2), a16(3), a16(4), a16(5), a16(6), a16(7), a16(8), a16(9), a16(128),
     };
