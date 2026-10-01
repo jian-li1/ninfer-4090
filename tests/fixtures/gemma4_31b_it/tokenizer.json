@@ -1,0 +1,58 @@
+{
+  "cases": [
+    {
+      "ids": [
+        9259,
+        236764,
+        147224,
+        236743,
+        236812,
+        236888
+      ],
+      "text": "Hello, Gemma 4!",
+      "tokens": [
+        "Hello",
+        ",",
+        "\u2581Gemma",
+        "\u2581",
+        "4",
+        "!"
+      ]
+    },
+    {
+      "ids": [
+        818,
+        3823,
+        8864,
+        37423
+      ],
+      "text": "The quick brown fox",
+      "tokens": [
+        "The",
+        "\u2581quick",
+        "\u2581brown",
+        "\u2581fox"
+      ]
+    },
+    {
+      "ids": [
+        55107,
+        236787,
+        8369,
+        8369,
+        8369,
+        236761
+      ],
+      "text": "Repeat: token token token.",
+      "tokens": [
+        "Repeat",
+        ":",
+        "\u2581token",
+        "\u2581token",
+        "\u2581token",
+        "."
+      ]
+    }
+  ],
+  "source_sha256": "cc8d3a0ce36466ccc1278bf987df5f71db1719b9ca6b4118264f45cb627bfe0f"
+}

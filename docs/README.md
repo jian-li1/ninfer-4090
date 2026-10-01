@@ -71,5 +71,6 @@ Artifact and model references:
 - [Qwen3.6-27B artifact contracts, including NVFP4](maintainer/qwen3.6-27b-artifact.md)
 - [Qwen3.8-27B DFlash2 mathematics and Engine state contract](maintainer/qwen3.8-27b-dflash2.md)
 - [Qwen3.8-27B artifact contracts, including the NVFP4 target](maintainer/qwen3.8-27b-artifact.md)
+- [Gemma 4 31B IT text-model semantics and pinned authority](maintainer/gemma4-31b-it-model.md)
 - [Qwen3.6-35B-A3B model semantics](maintainer/qwen3.6-35b-a3b-model.md)
 - [Qwen3.6-35B-A3B artifact contracts](maintainer/qwen3.6-35b-a3b-artifact.md)

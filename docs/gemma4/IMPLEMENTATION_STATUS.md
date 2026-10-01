@@ -20,7 +20,7 @@ commit that completes each phase.
 | Phase | Status | Evidence or gate |
 |---:|---|---|
 | 0 | complete | Baseline environment, full test suites, and Qwen3.8 public-Engine smoke recorded |
-| 1 | pending | Pinned source revisions and semantic fixtures |
+| 1 | complete | Immutable sources, compact semantic fixtures, real target logits, and assistant MTP1 |
 | 2 | pending | Compile-time Gemma family and target skeleton |
 | 3 | pending | `.ninfer` converter and exact binder |
 | 4 | pending | Reference-correct short-context execution |
@@ -53,26 +53,50 @@ The optional multimodal/vision extension after Phase 17 is intentionally not sch
 
 ## Pinned sources
 
-Phase 1 will replace these placeholders with immutable revisions and fixture hashes after inspecting
-the authoritative Google artifacts and the exact Transformers implementation:
+These revisions are immutable. Small-resource hashes and every fixture-array hash are recorded in
+`tests/fixtures/gemma4_31b_it/metadata.json`.
 
-| Source | Revision |
-|---|---|
-| Target checkpoint | pending |
-| Assistant checkpoint | pending |
-| Tokenizer resources | pending |
-| Transformers Gemma 4 implementation | pending |
+| Source | Revision | Checkpoint SHA-256 |
+|---|---|---|
+| `google/gemma-4-31B-it-qat-w4a16-ct` | `52f3f65bc7a02d555763bc923bd1d9094898219d` | `1b9b1d622a93f02c0d33f98e502f233b5d707443af6ddc464ed0bf5498506c20` |
+| `google/gemma-4-31B-it-assistant` | `627c5ec1458b9086b841a91e0512fd31fd2fbbf1` | `9f80df6099fa1fd7db71220ec9ee864d5ecff769878697dd5763e4285b15a1da` |
+| Target tokenizer resources | target revision above | hashes in fixture metadata |
+| Hugging Face Transformers | `d6c1e71bd717bf092f8293f0c3c9bd4a5ac5401a` | n/a |
+
+## Phase 1 record
+
+- Pinned the public target, assistant, tokenizer, and Transformers implementation to the revisions
+  above; both complete checkpoint SHA-256 values match their official linked hashes.
+- The compact 108 KiB fixture archive covers every unique text-model operation and the immutable
+  assistant layer-to-target K/V mapping.
+- The source-gated generator independently decoded and executed all 60 target layers, captured 68
+  checkpoint arrays including full-model logits, and ran official assistant MTP1.
+- The target INT4/group-32 decoder matched compressed-tensors 0.15.1.a20260521 bit-for-bit on real
+  stored weights and scales.
+- Pinned Transformers reproduced the assistant feedback vector and all 262,144 MTP1 logits exactly,
+  including the real shared target K/V fixture.
+- A second complete source-checkpoint generation reproduced all 68 canonical array hashes.
+- Tests: 9/9 Phase 1 tests passed with source checkpoints; maintained Python suites passed 84/84
+  with four expected skips; the separately packaged eval suite passed 19/19 plus three subtests.
+- Qwen3.8 public-Engine regression smoke remained healthy: 125.8 decode tok/s, 99.0 overall tok/s,
+  62.5% MTP acceptance, and 5.80 GiB free after startup.
 
 ## Open blockers and limitations
 
-- The target and assistant checkpoints are not yet present locally; Phase 1 must pin and acquire
-  only the metadata/resources needed for fixtures before any runtime semantics are frozen.
 - No Gemma artifact exists yet, so Gemma memory and performance measurements begin in later phases.
+- Full-checkpoint fixture regeneration requires restaging the two immutable source checkpoints;
+  they are intentionally not committed to this repository.
 - The repository-documented Python 3.11 interpreter path is absent on this machine. The isolated
-  Phase 0 environment is reproducible through `uv`; Phase 1 will commit exact environment
-  instructions for the reference tools.
+  reference environment is reproducible through `uv` and the pinned requirements under
+  `tools/reference/gemma4_31b_it/`.
 
 ## Reproduction
 
 Run the commands in [the Phase 0 baseline record](../benchmarks/gemma4-baseline-environment.md).
-Phase-specific commands will be added here as their gates are completed.
+After staging the pinned sources, reproduce Phase 1 with:
+
+```bash
+/tmp/ninfer-gemma4-reference/bin/python tools/reference/gemma4_31b_it/generate.py --source-dir /dev/shm/ninfer-gemma4-sources --output-dir tests/fixtures/gemma4_31b_it
+/tmp/ninfer-gemma4-reference/bin/python tools/reference/gemma4_31b_it/generate_checkpoint.py --source-dir /dev/shm/ninfer-gemma4-sources --output-dir tests/fixtures/gemma4_31b_it --row-chunk 2048
+NINFER_GEMMA4_SOURCE_DIR=/dev/shm/ninfer-gemma4-sources /tmp/ninfer-gemma4-reference/bin/python -m pytest -q tests/reference
+```

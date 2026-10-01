@@ -1,0 +1,42 @@
+{
+  "layers": [
+    {
+      "assistant_layer": 0,
+      "attention_type": "sliding_attention",
+      "head_dim": 256,
+      "kv_heads": 16,
+      "mask": "bidirectional q_len=1 over the retained target sliding view; window direction reversed to target-history order",
+      "target_layer": 58
+    },
+    {
+      "assistant_layer": 1,
+      "attention_type": "sliding_attention",
+      "head_dim": 256,
+      "kv_heads": 16,
+      "mask": "bidirectional q_len=1 over the retained target sliding view; window direction reversed to target-history order",
+      "target_layer": 58
+    },
+    {
+      "assistant_layer": 2,
+      "attention_type": "sliding_attention",
+      "head_dim": 256,
+      "kv_heads": 16,
+      "mask": "bidirectional q_len=1 over the retained target sliding view; window direction reversed to target-history order",
+      "target_layer": 58
+    },
+    {
+      "assistant_layer": 3,
+      "attention_type": "full_attention",
+      "head_dim": 512,
+      "kv_heads": 4,
+      "mask": "bidirectional q_len=1 over the complete target full-attention view",
+      "target_layer": 59
+    }
+  ],
+  "position_semantics": {
+    "assistant_appends_kv": false,
+    "fixed_within_draft_loop": true,
+    "value": "input_length - 1"
+  },
+  "schema": "ninfer.gemma4.assistant-shared-kv.v1"
+}
