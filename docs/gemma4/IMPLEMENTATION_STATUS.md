@@ -28,7 +28,7 @@ commit that completes each phase.
 | 6 | complete | Exact E8 parity, retrieval gates, production throughput, and physical bytes for D256/D512 |
 | 7 | complete | D256 Q32/KV16 E8 ring attention is 4.68-19.56x faster than the reference path |
 | 8 | complete | D512 GQA-8 global attention is correct through 128K and stable through 256K |
-| 9 | pending | 262,144-token target-only execution |
+| 9 | complete | 262,144 allocation and 260K cold prefill/deep decode pass with 1.66 GiB slack |
 | 10 | conditional | Shared global K/V latent cache; implement only if Phase 9/MTP/graph memory evidence triggers it |
 | 11 | pending | CUDA Graph decode |
 | 12 | pending | Official Gemma MTP1 |
@@ -211,6 +211,15 @@ Phase 0 full-suite result remains the regression baseline; all Phase 2 affected 
 - On RTX 4090, T=1 measured 144.128 us at 32K, 503.808 us at 128K, and 968.704 us at 256K. Compressed payload throughput reached 588.9 GB/s and the deep route was 5.79x faster than the provisional SIMT split kernel at 256K.
 - Public prefill beat the BF16 control by 2.61x at C=1K/T=16, 9.94x at C=4K/T=128, and 13.78x at C=8K/T=1024. Static resource inspection found 254-255 registers/thread, 10,304-19,584 static plus 65,536 dynamic shared bytes, and no stack/local spill.
 - Nsight Compute counter collection is blocked by host `ERR_NVGPUCTRPERM`; the exact attempted command and the complete correctness, timing, route, resource, and limitation record are in [the Phase 8 qualification](../benchmarks/gemma4-phase8-global-attention.md).
+
+## Phase 9 record
+
+- Added a target-owned streaming Program route that processes page-local chunks through all 60 layers while retaining history in the Phase 5 heterogeneous cache. One transaction publishes every layer at a common frontier; absolute positions drive full and proportional RoPE.
+- The real 15.806 GiB target plus complete 262,144-token RK4V4-E8 cache and bounded workspaces starts with 1,785,397,248 bytes (1.66 GiB) free. Exact KV payload is 5,971,640,320 bytes and metadata is 32,920 bytes.
+- A real-model 260,000-token cold prefill completed in 793,626.625 ms with no host paging. One isolated 60-layer decode at that frontier took 32.562 ms and committed frontier 260,001.
+- Deterministic E8 retrieval passed at 240K and 260K: both needles ranked first; 260K recall@32 was 0.71875 and score cosine was 0.986491.
+- The maintained real-artifact test preserves five-token BF16-reference greedy parity and 65-token output invariance across 32- and 64-token chunk schedules. The exact 262K layout/memory contract is covered without requiring the artifact.
+- Ordinary RK4V4-E8 exceeds the preferred 512 MiB reserve by 3.4x, so Phase 10 shared-global-latent cache is not triggered by Phase 9 capacity. Commands and the complete memory/execution record are in [the Phase 9 qualification](../benchmarks/gemma4-phase9-262k.md).
 
 ## Open blockers and limitations
 

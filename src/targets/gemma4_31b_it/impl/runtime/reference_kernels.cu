@@ -41,7 +41,7 @@ __device__ float block_sum(float value) {
 __global__ void prepare_qkv_kernel(
     const __nv_bfloat16* packed, const __nv_bfloat16* query_gain,
     const __nv_bfloat16* key_gain, int rows, int tokens, int head_dim, int kv_heads,
-    float theta, int active_pairs, __nv_bfloat16* query, __nv_bfloat16* key,
+    float theta, int active_pairs, int first_position, __nv_bfloat16* query, __nv_bfloat16* key,
     __nv_bfloat16* value) {
     const int logical_row = static_cast<int>(blockIdx.x);
     const int token = logical_row / (32 + 2 * kv_heads);
@@ -80,7 +80,7 @@ __global__ void prepare_qkv_kernel(
         float angle = 0.0F;
         if (pair < active_pairs) {
             const float inverse_frequency = powf(theta, -2.0F * pair / head_dim);
-            angle = token * inverse_frequency;
+            angle = (first_position + token) * inverse_frequency;
         }
         const __nv_bfloat16 cosine = __float2bfloat16(cosf(angle));
         const __nv_bfloat16 sine = __float2bfloat16(sinf(angle));
@@ -225,14 +225,14 @@ void scale_embedding(Tensor& hidden, float scale, cudaStream_t stream) {
 
 void prepare_qkv(const Tensor& packed, const Tensor& query_gain, const Tensor& key_gain,
                  std::int32_t head_dim, std::int32_t kv_heads, float theta,
-                 std::int32_t active_pairs, Tensor& query, Tensor& key, Tensor& value,
+                 std::int32_t active_pairs, std::int32_t first_position, Tensor& query, Tensor& key, Tensor& value,
                  cudaStream_t stream) {
     const int tokens = packed.ne[1];
     prepare_qkv_kernel<<<tokens * (32 + 2 * kv_heads), 256, 0, stream>>>(
         static_cast<const __nv_bfloat16*>(packed.data),
         static_cast<const __nv_bfloat16*>(query_gain.data),
         static_cast<const __nv_bfloat16*>(key_gain.data), packed.ne[0], tokens, head_dim,
-        kv_heads, theta, active_pairs, static_cast<__nv_bfloat16*>(query.data),
+        kv_heads, theta, active_pairs, first_position, static_cast<__nv_bfloat16*>(query.data),
         static_cast<__nv_bfloat16*>(key.data), static_cast<__nv_bfloat16*>(value.data));
     CUDA_CHECK(cudaGetLastError());
 }

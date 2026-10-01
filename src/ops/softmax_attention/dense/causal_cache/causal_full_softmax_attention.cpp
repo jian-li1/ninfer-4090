@@ -142,8 +142,7 @@ void causal_full_softmax_attention(const Tensor& q, const Tensor& k, const Tenso
     require_contiguous(positions, "positions");
     require_contiguous(out, "out");
     const std::uint32_t cache_capacity = validate_cache(cache);
-    if (envelope.max_visible_keys > cache_capacity ||
-        envelope.min_visible_keys < static_cast<std::uint32_t>(tokens)) {
+    if (envelope.max_visible_keys > cache_capacity) {
         throw std::invalid_argument(
             "causal_full_softmax_attention: execution envelope exceeds cache");
     }

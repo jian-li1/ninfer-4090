@@ -70,6 +70,17 @@ ninfer_add_op_bench(ninfer_gemma4_global_attention_bench
 ninfer_add_op_bench(ninfer_kv_cache_append_bench SOURCES ops/kv_cache_append_bench.cu)
 ninfer_add_op_bench(ninfer_gemma4_e8_retrieval_bench
   SOURCES ops/gemma4_e8_retrieval_bench.cpp)
+
+if(NINFER_BUILD_GEMMA4_31B_IT)
+  add_executable(ninfer_gemma4_31b_it_long_context gemma4_31b_it_long_context.cpp)
+  target_include_directories(ninfer_gemma4_31b_it_long_context PRIVATE
+    ${PROJECT_SOURCE_DIR}/include
+    ${PROJECT_SOURCE_DIR}/src
+    ${PROJECT_SOURCE_DIR}/src/targets/gemma4/export
+    ${PROJECT_SOURCE_DIR}/src/targets/gemma4_31b_it/export
+    ${PROJECT_SOURCE_DIR}/src/targets/gemma4_31b_it/impl)
+  target_link_libraries(ninfer_gemma4_31b_it_long_context PRIVATE ninfer_engine ${NINFER_CUDART_TARGET})
+endif()
 ninfer_add_op_bench(ninfer_prepare_masked_block_bench
   SOURCES ops/prepare_masked_block_bench.cu)
 ninfer_add_op_bench(ninfer_sampling_select_bench SOURCES ops/sampling_select_bench.cu)

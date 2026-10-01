@@ -147,6 +147,23 @@ void exercise_target_plan() {
                 layout.groups[1].table_page_capacity == 512,
             "Gemma heterogeneous table planning is incorrect");
 
+    const auto full_specs = make_text_kv_group_specs({
+        .maximum_context = 262144,
+        .maximum_transaction_tokens = 64,
+        .global_resident_token_capacity = 262144,
+        .table_rows = 1,
+    });
+    ninfer::LayoutBuilder full_builder;
+    const HeterogeneousKVCacheLayout full_layout =
+        ninfer::plan_heterogeneous_kv_cache(full_builder, full_specs);
+    require(full_layout.groups[0].table_page_capacity == 17 &&
+                full_layout.groups[0].spec.physical_page_groups == 19 &&
+                full_layout.groups[1].table_page_capacity == 4096 &&
+                full_layout.groups[1].spec.physical_page_groups == 4098 &&
+                full_layout.payload_bytes() == 5971640320ULL &&
+                full_layout.metadata_bytes() == 32920,
+            "Gemma 262K KV layout or memory contract changed");
+
     const std::vector<std::byte> encoded = ninfer::encode_kv_group_descriptors(specs);
     const auto decoded = ninfer::decode_kv_group_descriptors(encoded);
     require(decoded.size() == specs.size(), "KV descriptor group count changed");

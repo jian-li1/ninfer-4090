@@ -272,8 +272,12 @@ int main() {
     int failures = 0;
     failures += run_retrieval(32768, 0x409031u);
     failures += run_retrieval(65536, 0x409064u);
+    failures += run_retrieval(240000, 0x409240u);
+    failures += run_retrieval(260000, 0x409260u);
     report_bytes(32768);
     report_bytes(65536);
+    report_bytes(240000);
+    report_bytes(260000);
     std::cout << (failures ? "FAIL" : "OK") << " gemma4_e8_retrieval\n";
     return failures ? 1 : 0;
 }

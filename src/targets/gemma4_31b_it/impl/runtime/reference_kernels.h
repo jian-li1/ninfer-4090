@@ -12,7 +12,7 @@ void scale_embedding(Tensor& hidden, float scale, cudaStream_t stream);
 
 void prepare_qkv(const Tensor& packed, const Tensor& query_gain, const Tensor& key_gain,
                  std::int32_t head_dim, std::int32_t kv_heads, float theta,
-                 std::int32_t active_pairs, Tensor& query, Tensor& key, Tensor& value,
+                 std::int32_t active_pairs, std::int32_t first_position, Tensor& query, Tensor& key, Tensor& value,
                  cudaStream_t stream);
 
 void reference_attention(const Tensor& query, const Tensor& key, const Tensor& value,
