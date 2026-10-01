@@ -26,7 +26,7 @@ commit that completes each phase.
 | 4 | complete | Reference-correct C++/CUDA short-context execution and first-divergence parity |
 | 5 | complete | Atomic heterogeneous local/global KV groups qualified through 32K |
 | 6 | complete | Exact E8 parity, retrieval gates, production throughput, and physical bytes for D256/D512 |
-| 7 | pending | Optimized D256 sliding attention |
+| 7 | complete | D256 Q32/KV16 E8 ring attention is 4.68-19.56x faster than the reference path |
 | 8 | pending | Optimized D512 global attention |
 | 9 | pending | 262,144-token target-only execution |
 | 10 | conditional | Shared global K/V latent cache; implement only if Phase 9/MTP/graph memory evidence triggers it |
@@ -184,6 +184,24 @@ Phase 0 full-suite result remains the regression baseline; all Phase 2 affected 
   local layers consume 222,822,400-236,748,800 bytes across the 16-17 resident-page range;
   combined local/global payload is 935,854,080-949,780,480 bytes at 32K and
   1,648,885,760-1,662,812,160 bytes at 64K.
+
+## Phase 7 record
+
+- Added the exact D256 Q32/KV16, scale-1.0 public local-attention Op over the Phase 5 stable
+  17-slot circular mapping. Each page-local call publishes current K/V through RK4V4-E8, decodes
+  E8 directly in the attention load path, and restricts reads to the causal 1,024-token window.
+- The independent FP64 oracle covers lengths 1, 2, 127, 128, 1023, 1024, 1025, and 2048,
+  fragmented physical mapping, page tails, and repeated ring wraps. Relative L2 remained
+  0.002065-0.002377 with maximum absolute error at most 0.001790.
+- On RTX 4090, the complete public Op measured 52.448 us at T=128 and 2,177.024 us at T=2048,
+  including E8 append and inverse rotation. This is 4.68x and 19.56x faster respectively than the
+  Phase 4 transient-BF16 control, with intermediate speedups increasing monotonically.
+- The SM89 E8 kernel retains the tuned 16-warp/64x64 schedule and 93,696-byte dynamic shared
+  arena. It compiles at 119 registers/thread with no spill. Full-window T=1 measured 70.432 us; a
+  separate decode kernel remains conditional on later whole-model attribution.
+- Shared causal-attention, KV append, and exact Gemma E8 codec regressions remain green. Commands,
+  the complete timing table, and interpretation are in
+  [the Phase 7 qualification](../benchmarks/gemma4-phase7-sliding-attention.md).
 
 ## Open blockers and limitations
 

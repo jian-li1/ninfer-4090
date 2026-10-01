@@ -13,7 +13,7 @@
 namespace ninfer::ops::detail {
 namespace {
 
-template <typename Geometry, typename CacheView, typename Metadata>
+template <typename Geometry, int SlidingWindow = 0, typename CacheView, typename Metadata>
 void causal_attention_prompt_attention_launch_for(const Tensor& q, const Tensor& positions,
                                                   float scale, const CacheView& cache,
                                                   Metadata metadata, Tensor& out,
@@ -37,11 +37,10 @@ void causal_attention_prompt_attention_launch_for(const Tensor& q, const Tensor&
                                    bool E8Root>() {
             static const cudaError_t attr_i8 = cudaFuncSetAttribute(
                 causal_attention_prompt_i8_kernel<Geometry, PackedV, RotateK, RotateV, PackedK,
-                                                  E8Root, Metadata>,
+                                                  E8Root, SlidingWindow, Metadata>,
                 cudaFuncAttributeMaxDynamicSharedMemorySize, kCausalPromptI8SmemBytes);
             CUDA_CHECK(attr_i8);
-            causal_attention_prompt_i8_kernel<Geometry, PackedV, RotateK, RotateV, PackedK, E8Root,
-                                              Metadata>
+            causal_attention_prompt_i8_kernel<Geometry, PackedV, RotateK, RotateV, PackedK, E8Root, SlidingWindow, Metadata>
                 <<<attention_grid, kCausalPromptI8Threads, kCausalPromptI8SmemBytes, stream>>>(
                     static_cast<const __nv_bfloat16*>(q.data),
                     static_cast<const std::int8_t*>(cache_k.data),
@@ -81,6 +80,15 @@ void causal_attention_prompt_attention_launch_for(const Tensor& q, const Tensor&
 }
 
 } // namespace
+
+void causal_sliding_attention_launch(const Tensor& q, const Tensor& positions, float scale,
+                                     const PagedKVLayerView& cache, Tensor& out,
+                                     cudaStream_t stream) {
+    const PagedKVRingDirectMetadata metadata{
+        static_cast<const std::int32_t*>(cache.block_table.data), cache.block_table.ne[0]};
+    causal_attention_prompt_attention_launch_for<CausalD256H32Kv16, 1024>(
+        q, positions, scale, cache, metadata, out, stream);
+}
 
 void causal_attention_prompt_attention_launch(const Tensor& q, const Tensor& positions, float scale,
                                               const PagedKVLayerView& cache, Tensor& out,

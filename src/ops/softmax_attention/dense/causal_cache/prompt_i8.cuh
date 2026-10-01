@@ -105,7 +105,7 @@ __device__ __forceinline__ int4 causal_prompt_i8_dequant_f16x8(const std::int8_t
 #endif
 
 template <typename Geometry, bool PackedV, bool RotateK, bool RotateV, bool PackedK,
-          bool E8Root = false, typename Metadata>
+          bool E8Root = false, int SlidingWindow = 0, typename Metadata>
 __global__ __maxnreg__(NINFER_CAUSAL_PROMPT_I8_MAXNREG) void causal_attention_prompt_i8_kernel(
     const __nv_bfloat16* __restrict__ q, const std::int8_t* __restrict__ cache_k,
     const std::uint8_t* __restrict__ cache_v, const __half* __restrict__ cache_k_scale,
@@ -173,16 +173,21 @@ __global__ __maxnreg__(NINFER_CAUSAL_PROMPT_I8_MAXNREG) void causal_attention_pr
         return;
     }
     const int base_pos              = positions[0];
-    const std::int32_t* block_table = metadata.block_table();
 
     const int tile_rows     = min(Br, tokens - q0);
     const int max_query_abs = base_pos + q0 + tile_rows - 1;
-    const int key_blocks    = max_query_abs / Bc + 1;
+    const int first_key =
+        SlidingWindow > 0 ? max(0, base_pos + q0 - SlidingWindow + 1) : 0;
+    const int first_key_block = first_key / Bc;
+    const int key_blocks      = max_query_abs / Bc + 1;
 
     // Leading key blocks whose every key is visible to every row of this CTA tile
     // ((kb + 1) * Bc - 1 <= base_pos + q0). Those blocks stage and score without
     // causal guards; the boundary blocks after them keep the exact masked path.
-    const int n_full_blocks = (q0 + Br <= tokens) ? min(key_blocks, (base_pos + q0 + 1) / Bc) : 0;
+    const int n_full_blocks =
+        SlidingWindow > 0
+            ? first_key_block
+            : ((q0 + Br <= tokens) ? min(key_blocks, (base_pos + q0 + 1) / Bc) : 0);
 
     // Quantize Q cooperatively. One warp owns one (row, 64-d group) at a time.
     for (int unit = warp; unit < Br * Groups; unit += kCausalPromptI8Warps) {
@@ -211,7 +216,7 @@ __global__ __maxnreg__(NINFER_CAUSAL_PROMPT_I8_MAXNREG) void causal_attention_pr
         // FullTile folds every causal guard to taken and dead-codes the zero-fill
         // paths; interior blocks stage with unconditional copies.
         constexpr bool FullTile = decltype(full_tag)::value;
-        const int physical_page = block_table[tile_k0 >> kPagedKVPageShift];
+        const int physical_page = metadata.physical_page(tile_k0 >> kPagedKVPageShift);
         for (int key_l = tid; key_l < Bc; key_l += kCausalPromptI8Threads) {
             const int key = tile_k0 + key_l;
             __half* kd    = &k_scale_s[key_l * Groups];
@@ -279,10 +284,10 @@ __global__ __maxnreg__(NINFER_CAUSAL_PROMPT_I8_MAXNREG) void causal_attention_pr
         ninfer::ops::cp_commit();
     };
 
-    if (n_full_blocks > 0) {
-        issue_kv_tile(0, std::true_type{});
+    if (first_key_block < n_full_blocks) {
+        issue_kv_tile(first_key_block * Bc, std::true_type{});
     } else {
-        issue_kv_tile(0, std::false_type{});
+        issue_kv_tile(first_key_block * Bc, std::false_type{});
     }
     ninfer::ops::cp_wait<0>();
     __syncthreads();
@@ -409,17 +414,24 @@ __global__ __maxnreg__(NINFER_CAUSAL_PROMPT_I8_MAXNREG) void causal_attention_pr
                 const int qabs1 = row1 < tile_rows ? base_pos + q0 + row1 : -1;
                 // A boundary block can still be fully visible for a tail CTA whose
                 // n_full_blocks collapsed to zero; keep the per-block skip.
-                const bool full_score_tile = q0 + Br <= tokens && k0 + Bc - 1 <= base_pos + q0;
+                const bool full_score_tile = SlidingWindow == 0 && q0 + Br <= tokens &&
+                                             k0 + Bc - 1 <= base_pos + q0;
                 if (!full_score_tile) {
 #pragma unroll
                     for (int ntl = 0; ntl < QKNtL; ++ntl) {
                         const int nt   = col_half * QKNtL + ntl;
                         const int key0 = k0 + nt * 8 + 2 * lid;
                         const int key1 = key0 + 1;
-                        score[ntl][0]  = key0 <= qabs0 ? score[ntl][0] : -CUDART_INF_F;
-                        score[ntl][1]  = key1 <= qabs0 ? score[ntl][1] : -CUDART_INF_F;
-                        score[ntl][2]  = key0 <= qabs1 ? score[ntl][2] : -CUDART_INF_F;
-                        score[ntl][3]  = key1 <= qabs1 ? score[ntl][3] : -CUDART_INF_F;
+                        const int lower0 = SlidingWindow > 0 ? qabs0 - SlidingWindow + 1 : 0;
+                        const int lower1 = SlidingWindow > 0 ? qabs1 - SlidingWindow + 1 : 0;
+                        score[ntl][0] = key0 >= lower0 && key0 <= qabs0 ? score[ntl][0]
+                                                                            : -CUDART_INF_F;
+                        score[ntl][1] = key1 >= lower0 && key1 <= qabs0 ? score[ntl][1]
+                                                                            : -CUDART_INF_F;
+                        score[ntl][2] = key0 >= lower1 && key0 <= qabs1 ? score[ntl][2]
+                                                                            : -CUDART_INF_F;
+                        score[ntl][3] = key1 >= lower1 && key1 <= qabs1 ? score[ntl][3]
+                                                                            : -CUDART_INF_F;
                     }
                 }
             }
@@ -588,8 +600,12 @@ __global__ __maxnreg__(NINFER_CAUSAL_PROMPT_I8_MAXNREG) void causal_attention_pr
         __syncthreads();
     };
 
-    for (int kb = 0; kb < n_full_blocks; ++kb) { process_key_block(kb, std::true_type{}); }
-    for (int kb = n_full_blocks; kb < key_blocks; ++kb) { process_key_block(kb, std::false_type{}); }
+    for (int kb = first_key_block; kb < n_full_blocks; ++kb) {
+        process_key_block(kb, std::true_type{});
+    }
+    for (int kb = max(first_key_block, n_full_blocks); kb < key_blocks; ++kb) {
+        process_key_block(kb, std::false_type{});
+    }
 
     if constexpr (ColSplit == 2) {
         if (warp < ProducerWarps && lid == 0) {

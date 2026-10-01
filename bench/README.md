@@ -604,6 +604,19 @@ cmake --build build --parallel --target ninfer_sliding_window_attention_bench
   --execution graph --cache cold --warmup 10 --repeat 61
 ```
 
+`ninfer_gemma4_sliding_attention_bench` measures the exact D256 Q32/KV16, W=1024,
+scale-1.0 Gemma local-attention Op. The optimized route includes current-row RK4V4-E8
+publication, fused E8 cache decode, attention, and inverse rotation. Its retained `control` route
+reproduces the Phase 4 transient-BF16 correctness kernel only for the Phase 7 speedup record. The
+default prefill sweep is 128-2048 tokens; a final row measures T=1 after preparing a full local
+window. This qualification benchmark is warm eager execution and does not make a CUDA Graph claim.
+
+```bash
+cmake --build build -j --target ninfer_gemma4_sliding_attention_bench
+./build/bench/ninfer_gemma4_sliding_attention_bench \
+  --tokens 128,256,512,1024,2048 --route both --warmup 3 --repeat 10
+```
+
 `ninfer_packed_softmax_attention_bench` measures both public dense Attention overloads: a uniform
 plain-segment entry and a packed entry driven by cumulative segment lengths. Equal-length inputs
 can compare both public entries; nonuniform inputs select only `packed`.

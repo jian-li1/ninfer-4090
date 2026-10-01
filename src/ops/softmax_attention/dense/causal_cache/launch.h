@@ -85,6 +85,10 @@ void causal_attention_cached_small_t_k8v4_launch(const Tensor& q, const Tensor& 
                                                  Tensor& partial_l, Tensor& out,
                                                  cudaStream_t stream);
 
+void causal_sliding_attention_launch(const Tensor& q, const Tensor& positions, float scale,
+                                     const PagedKVLayerView& cache, Tensor& out,
+                                     cudaStream_t stream);
+
 void causal_attention_prompt_launch(const Tensor& q, const Tensor& k, const Tensor& v,
                                     const Tensor& positions, const Tensor& valid_columns,
                                     const Tensor& table_rows, float scale,

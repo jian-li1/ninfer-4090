@@ -105,6 +105,7 @@ add_library(ninfer_ops STATIC
   ops/candidate_selector/bf16/candidate_selector_path_plan.cpp
   # Softmax Attention and KV-cache state transitions.
   ops/softmax_attention/dense/causal_cache/causal_softmax_attention.cpp
+  ops/softmax_attention/dense/causal_cache/causal_sliding_softmax_attention.cpp
   ops/softmax_attention/dense/causal_cache/small_t.cu
   ops/softmax_attention/dense/causal_cache/small_t_fp8.cu
   ops/softmax_attention/dense/causal_cache/small_t_nvfp4.cu

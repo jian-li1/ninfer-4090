@@ -212,6 +212,13 @@ void kv_cache_append_launch(const Tensor& k, const Tensor& v, const Tensor& posi
     launch_full<KVCacheAppendD256Kv2>(k, v, positions, cache, metadata, stream);
 }
 
+void kv_cache_append_sliding_launch(const Tensor& k, const Tensor& v, const Tensor& positions,
+                                    PagedKVLayerView cache, cudaStream_t stream) {
+    const PagedKVRingDirectMetadata metadata{
+        static_cast<const std::int32_t*>(cache.block_table.data), cache.block_table.ne[0]};
+    launch_full<KVCacheAppendD256Kv16>(k, v, positions, cache, metadata, stream);
+}
+
 void kv_cache_append_batch_launch(const Tensor& k, const Tensor& v, const Tensor& positions,
                                   const Tensor& valid_columns, const Tensor& table_rows,
                                   PagedKVBatchLayerView cache, cudaStream_t stream) {

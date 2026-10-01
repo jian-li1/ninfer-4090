@@ -63,6 +63,8 @@ ninfer_add_op_bench(ninfer_context_softmax_attention_bench
   SOURCES ops/context_softmax_attention_bench.cu)
 ninfer_add_op_bench(ninfer_sliding_window_attention_bench
   SOURCES ops/sliding_window_attention_bench.cu)
+ninfer_add_op_bench(ninfer_gemma4_sliding_attention_bench
+  SOURCES ops/gemma4_sliding_attention_bench.cu)
 ninfer_add_op_bench(ninfer_kv_cache_append_bench SOURCES ops/kv_cache_append_bench.cu)
 ninfer_add_op_bench(ninfer_gemma4_e8_retrieval_bench
   SOURCES ops/gemma4_e8_retrieval_bench.cpp)

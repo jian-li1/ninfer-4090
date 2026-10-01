@@ -89,8 +89,8 @@ __global__ void kv_cache_append_full_bf16_kernel(const __nv_bfloat16* __restrict
     const int d        = vec * VecElems;
     const int position = positions[0] + token;
     const int lane     = static_cast<int>(threadIdx.x) & 31;
-    const std::int32_t* block_table = metadata.block_table();
-    int physical_page               = lane == 0 ? paged_kv_physical_page(block_table, position) : 0;
+    int physical_page =
+        lane == 0 ? metadata.physical_page(position >> kPagedKVPageShift) : 0;
     const std::int64_t src_off =
         static_cast<std::int64_t>(d) + static_cast<std::int64_t>(Geometry::HeadDim) *
                                            (kv_head + Geometry::KVHeads * token);
@@ -125,8 +125,8 @@ __launch_bounds__(256) __global__
     const int kv_head               = unit % Geometry::KVHeads;
     const int token                 = unit / Geometry::KVHeads;
     const int position              = positions[0] + token;
-    const std::int32_t* block_table = metadata.block_table();
-    int physical_page               = lane == 0 ? paged_kv_physical_page(block_table, position) : 0;
+    int physical_page =
+        lane == 0 ? metadata.physical_page(position >> kPagedKVPageShift) : 0;
     physical_page                   = __shfl_sync(FullMask, physical_page, 0);
     kv_cache_append_full_fp8_row<Geometry>(k, v, cache_k, cache_v, scale_k, scale_v, token, kv_head,
                                            physical_page, position & kPagedKVPageMask, lane);
@@ -157,8 +157,7 @@ __launch_bounds__(256) __global__
 
     const int token = token_begin + warp;
     if (token >= token_end) return;
-    const std::int32_t* block_table = metadata.block_table();
-    int physical_page               = lane == 0 ? block_table[logical_page] : 0;
+    int physical_page               = lane == 0 ? metadata.physical_page(logical_page) : 0;
     physical_page                   = __shfl_sync(FullMask, physical_page, 0);
     const int position              = base_position + token;
     kv_cache_append_full_fp8_row<Geometry>(k, v, cache_k, cache_v, scale_k, scale_v, token, kv_head,
@@ -191,8 +190,7 @@ __launch_bounds__(256) __global__
     const int kv_head               = tmp % Geometry::KVHeads;
     const int token                 = tmp / Geometry::KVHeads;
     const int position              = positions[0] + token;
-    const std::int32_t* block_table = metadata.block_table();
-    int page                        = lane == 0 ? paged_kv_physical_page(block_table, position) : 0;
+    int page = lane == 0 ? metadata.physical_page(position >> kPagedKVPageShift) : 0;
     const int page_off              = position & kPagedKVPageMask;
     const int d0                    = group * kKVCacheInt8Group + lane;
     const int d1                    = d0 + 32;
@@ -333,8 +331,7 @@ __launch_bounds__(256) __global__ void kv_cache_append_full_i8_page_kernel(
     const int token_end         = min(tokens, tile_position + TokensPerTile - base_position);
     if (token_begin >= token_end) { return; }
 
-    const std::int32_t* block_table = metadata.block_table();
-    int physical_page               = lane == 0 ? block_table[logical_page] : 0;
+    int physical_page               = lane == 0 ? metadata.physical_page(logical_page) : 0;
 
     const int token  = token_begin + warp;
     const bool valid = token < token_end;

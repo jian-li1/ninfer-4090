@@ -107,7 +107,7 @@ void packed_softmax_attention(const Tensor& q, const Tensor& k, const Tensor& v,
  * Append K/V for B independent rows and compute causal grouped-query attention.
  *
  * The registered profiles are [D,Hq,Hkv]=[256,24,4] (group 6) and [256,16,2] (group 8), with
- * scale=1/sqrt(256). q/out are contiguous BF16 [D,Hq,W,B], k/v are contiguous BF16
+ * scale=1.0. q/out are contiguous BF16 [D,Hq,W,B], k/v are contiguous BF16
  * [D,Hkv,W,B], positions are contiguous device I32 [W,B], kv_table_rows is contiguous device I32
  * [B], and the cache is BF16, INT8-G64, row-scaled FP8-E4M3FN, NVFP4-G16, or K8V4. valid_columns is
  * either contiguous device I32 [B] or an empty Tensor meaning every row has W live columns. This
@@ -163,6 +163,25 @@ void causal_softmax_attention_cached(const Tensor& q, const Tensor& positions,
     AttentionHeadGeometry geometry, KvCacheStorage cache_storage,
     CausalAttentionExecutionEnvelope envelope, std::int32_t batch_size, std::int32_t min_tokens,
     std::int32_t max_tokens);
+
+/**
+ * Gemma local causal sliding attention with fused E8 cache publication.
+ *
+ * The exact registered profile is D=256, Hq=32, Hkv=16, W=1024, scale=1.0, B=1,
+ * and T=1..64. The caller divides a prefill into sequential segments that do not cross a 64-token
+ * logical page boundary. q/out are BF16 [256,32,T], k/v are BF16 [256,16,T], positions is
+ * device I32 [T], and positions are sequential. The 17-slot page-major cache is RK4V4-E8 and its
+ * block table maps absolute logical page b through slot b mod 17.
+ *
+ * The Op first publishes current K/V through the persistent E8 codec, then computes causal
+ * attention over exactly [max(0,p-1023),p] for query position p. This page-local schedule ensures
+ * a modulo slot is reused only after its previous page is outside every query window. Inputs and
+ * block table remain unchanged; addressed cache rows and all output rows are overwritten.
+ */
+void causal_sliding_softmax_attention(const Tensor& q, const Tensor& k, const Tensor& v,
+                                      const Tensor& positions, AttentionHeadGeometry geometry,
+                                      std::uint32_t window, float scale, PagedKVLayerView cache,
+                                      Tensor& out, cudaStream_t stream);
 
 /**
  * Non-causal grouped-query attention over persistent context plus one live query block.
