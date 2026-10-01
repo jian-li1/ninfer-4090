@@ -34,13 +34,13 @@ struct CausalCachedInput {
 template <typename Geometry>
 __device__ __forceinline__ std::int64_t causal_cache_index(int physical_page, int kv_head, int d,
                                                            int page_offset) {
-    return paged_kv_element_offset<kCausalHeadDim, Geometry::KVHeads>(physical_page, kv_head,
+    return paged_kv_element_offset<Geometry::HeadDim, Geometry::KVHeads>(physical_page, kv_head,
                                                                       page_offset, d);
 }
 
 template <typename Geometry>
 __device__ __forceinline__ std::int64_t causal_q_index(int q_head, int d, int token = 0) {
-    return static_cast<std::int64_t>(d) + static_cast<std::int64_t>(kCausalHeadDim) *
+    return static_cast<std::int64_t>(d) + static_cast<std::int64_t>(Geometry::HeadDim) *
                                               (static_cast<std::int64_t>(q_head) +
                                                static_cast<std::int64_t>(Geometry::QHeads) * token);
 }
@@ -48,7 +48,7 @@ __device__ __forceinline__ std::int64_t causal_q_index(int q_head, int d, int to
 template <typename Geometry>
 __device__ __forceinline__ std::int64_t kv_cache_int8_new_index(int kv_head, int d, int token = 0) {
     return static_cast<std::int64_t>(d) +
-           static_cast<std::int64_t>(kCausalHeadDim) *
+           static_cast<std::int64_t>(Geometry::HeadDim) *
                (static_cast<std::int64_t>(kv_head) +
                 static_cast<std::int64_t>(Geometry::KVHeads) * token);
 }
@@ -57,7 +57,7 @@ template <typename Geometry>
 __device__ __forceinline__ std::int64_t causal_partial_acc_index(int q_head, int d, int token,
                                                                  int split, int tokens) {
     return static_cast<std::int64_t>(d) +
-           static_cast<std::int64_t>(kCausalHeadDim) *
+           static_cast<std::int64_t>(Geometry::HeadDim) *
                (static_cast<std::int64_t>(q_head) +
                 static_cast<std::int64_t>(Geometry::QHeads) *
                     (static_cast<std::int64_t>(token) + static_cast<std::int64_t>(tokens) * split));

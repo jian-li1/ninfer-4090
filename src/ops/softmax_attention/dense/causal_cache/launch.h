@@ -85,6 +85,14 @@ void causal_attention_cached_small_t_k8v4_launch(const Tensor& q, const Tensor& 
                                                  Tensor& partial_l, Tensor& out,
                                                  cudaStream_t stream);
 
+std::int32_t causal_full_attention_split_capacity(
+    CausalAttentionExecutionEnvelope envelope);
+
+void causal_full_attention_launch(
+    const Tensor& q, const Tensor& positions, CausalAttentionExecutionEnvelope envelope,
+    const PagedKVLayerView& cache, Tensor& partial_acc, Tensor& partial_m, Tensor& partial_l,
+    Tensor& out, cudaStream_t stream);
+
 void causal_sliding_attention_launch(const Tensor& q, const Tensor& positions, float scale,
                                      const PagedKVLayerView& cache, Tensor& out,
                                      cudaStream_t stream);

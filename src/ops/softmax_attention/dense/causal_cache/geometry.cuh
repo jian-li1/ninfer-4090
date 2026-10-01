@@ -8,6 +8,7 @@ template <int QHeadsValue, int KVHeadsValue, int SmallTSplitScaleValue>
 struct CausalAttentionGeometry : AttentionHeadMapping<QHeadsValue, KVHeadsValue> {
     static_assert(SmallTSplitScaleValue > 0);
 
+    static constexpr int HeadDim             = 256;
     static constexpr int SmallTSplitScale    = SmallTSplitScaleValue;
     static constexpr int SmallTMaximumSplits = 85 * SmallTSplitScale;
 };

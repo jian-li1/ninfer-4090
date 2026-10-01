@@ -58,10 +58,10 @@ __launch_bounds__(WarpsPerCta * 32, MinBlocksPerSm) __global__
     constexpr int RowTiles             = (RowCount + 15) / 16;
     constexpr int Br                   = RowTiles * 16;
     constexpr int Bc                   = KeyBlock;
-    constexpr int D                    = kCausalHeadDim;
+    constexpr int D                    = Geometry::HeadDim;
     constexpr int DB16                 = D / 2;
     constexpr int Threads              = Wc * 32;
-    constexpr int Groups               = kKVCacheInt8Groups;
+    constexpr int Groups               = D / kKVCacheInt8Group;
     constexpr int GroupKc              = kKVCacheInt8Group / 32;
     constexpr int QKKs                 = D / 32;
     constexpr int QKNt                 = Bc / 8;
@@ -115,17 +115,17 @@ __launch_bounds__(WarpsPerCta * 32, MinBlocksPerSm) __global__
     }
     std::int64_t column_base = column_begin;
     if constexpr (MultiBatch) { column_base += static_cast<std::int64_t>(batch) * full_width; }
-    q += static_cast<std::int64_t>(kCausalHeadDim) * Geometry::QHeads * column_base;
+    q += static_cast<std::int64_t>(D) * Geometry::QHeads * column_base;
     pos += column_base;
     if constexpr (CacheInput::writes_cache) {
-        input.k += static_cast<std::int64_t>(kCausalHeadDim) * Geometry::KVHeads * column_base;
-        input.v += static_cast<std::int64_t>(kCausalHeadDim) * Geometry::KVHeads * column_base;
+        input.k += static_cast<std::int64_t>(D) * Geometry::KVHeads * column_base;
+        input.v += static_cast<std::int64_t>(D) * Geometry::KVHeads * column_base;
     }
     const int table_row = table_rows == nullptr ? 0 : table_rows[batch];
     const std::int32_t* block_table =
         block_tables + static_cast<std::int64_t>(table_row) * table_stride;
     if constexpr (MultiBatch) {
-        partial_acc += static_cast<std::int64_t>(batch) * kCausalHeadDim * Geometry::QHeads *
+        partial_acc += static_cast<std::int64_t>(batch) * D * Geometry::QHeads *
                        TokenTile * split_count;
         partial_m += static_cast<std::int64_t>(batch) * Geometry::QHeads * TokenTile * split_count;
         partial_l += static_cast<std::int64_t>(batch) * Geometry::QHeads * TokenTile * split_count;
@@ -171,7 +171,10 @@ __launch_bounds__(WarpsPerCta * 32, MinBlocksPerSm) __global__
     const int window = last_pos + 1;
     const int active_split_count =
         causal_small_t_active_splits<Geometry, true>(window, split_count, TokenTile);
-    if (split >= active_split_count) { return; }
+    if (split >= active_split_count) {
+        write_neutral();
+        return;
+    }
 
     const int logical_tiles = div_up(window, Bc);
     const bool tile_split   = logical_tiles >= active_split_count;
@@ -235,9 +238,9 @@ __launch_bounds__(WarpsPerCta * 32, MinBlocksPerSm) __global__
                 const float vv0_hi = __shfl_down_sync(FullMask, vv0, 1);
                 const float vv1_hi = __shfl_down_sync(FullMask, vv1, 1);
                 if ((lane & 1) == 0) {
-                    cache_v_codes[kv_cache_i4_code_index<Geometry>(physical_page, kv_head, d0 / 2, page_offset)] =
+                    cache_v_codes[kv_cache_i4_code_index<Geometry, D>(physical_page, kv_head, d0 / 2, page_offset)] =
                         kv_cache_pack_i4(kv_cache_i4_quant_code(vv0, v_inv), kv_cache_i4_quant_code(vv0_hi, v_inv));
-                    cache_v_codes[kv_cache_i4_code_index<Geometry>(physical_page, kv_head, d1 / 2, page_offset)] =
+                    cache_v_codes[kv_cache_i4_code_index<Geometry, D>(physical_page, kv_head, d1 / 2, page_offset)] =
                         kv_cache_pack_i4(kv_cache_i4_quant_code(vv1, v_inv), kv_cache_i4_quant_code(vv1_hi, v_inv));
                 }
             } else if constexpr (PackedK) {
@@ -271,46 +274,46 @@ __launch_bounds__(WarpsPerCta * 32, MinBlocksPerSm) __global__
                 const float vv0_hi = __shfl_down_sync(FullMask, vv0, 1);
                 const float vv1_hi = __shfl_down_sync(FullMask, vv1, 1);
                 if ((lane & 1) == 0) {
-                    reinterpret_cast<std::uint8_t*>(cache_k_i8)[kv_cache_i4_code_index<Geometry>(physical_page, kv_head, d0 / 2, page_offset)] =
+                    reinterpret_cast<std::uint8_t*>(cache_k_i8)[kv_cache_i4_code_index<Geometry, D>(physical_page, kv_head, d0 / 2, page_offset)] =
                         kv_cache_pack_i4(c0, c0_hi);
-                    reinterpret_cast<std::uint8_t*>(cache_k_i8)[kv_cache_i4_code_index<Geometry>(physical_page, kv_head, d1 / 2, page_offset)] =
+                    reinterpret_cast<std::uint8_t*>(cache_k_i8)[kv_cache_i4_code_index<Geometry, D>(physical_page, kv_head, d1 / 2, page_offset)] =
                         kv_cache_pack_i4(c1, c1_hi);
-                    cache_v_codes[kv_cache_i4_code_index<Geometry>(physical_page, kv_head, d0 / 2, page_offset)] =
+                    cache_v_codes[kv_cache_i4_code_index<Geometry, D>(physical_page, kv_head, d0 / 2, page_offset)] =
                         kv_cache_pack_i4(kv_cache_i4_quant_code(vv0, v_inv), kv_cache_i4_quant_code(vv0_hi, v_inv));
-                    cache_v_codes[kv_cache_i4_code_index<Geometry>(physical_page, kv_head, d1 / 2, page_offset)] =
+                    cache_v_codes[kv_cache_i4_code_index<Geometry, D>(physical_page, kv_head, d1 / 2, page_offset)] =
                         kv_cache_pack_i4(kv_cache_i4_quant_code(vv1, v_inv), kv_cache_i4_quant_code(vv1_hi, v_inv));
                 }
             } else {
-                cache_k_i8[kv_cache_int8_quant_code_index<Geometry>(physical_page, kv_head, d0, page_offset)] =
+                cache_k_i8[kv_cache_int8_quant_code_index<Geometry, D>(physical_page, kv_head, d0, page_offset)] =
                     kv_cache_int8_quant_code(kv0, k_inv);
-                cache_k_i8[kv_cache_int8_quant_code_index<Geometry>(physical_page, kv_head, d1, page_offset)] =
+                cache_k_i8[kv_cache_int8_quant_code_index<Geometry, D>(physical_page, kv_head, d1, page_offset)] =
                     kv_cache_int8_quant_code(kv1, k_inv);
                 if constexpr (PackedV) {
                     const float vv0_hi = __shfl_down_sync(FullMask, vv0, 1);
                     const float vv1_hi = __shfl_down_sync(FullMask, vv1, 1);
                     if ((lane & 1) == 0) {
-                        cache_v_codes[kv_cache_i4_code_index<Geometry>(physical_page, kv_head, d0 / 2,
+                        cache_v_codes[kv_cache_i4_code_index<Geometry, D>(physical_page, kv_head, d0 / 2,
                                                                      page_offset)] =
                             kv_cache_pack_i4(kv_cache_i4_quant_code(vv0, v_inv),
                                            kv_cache_i4_quant_code(vv0_hi, v_inv));
-                        cache_v_codes[kv_cache_i4_code_index<Geometry>(physical_page, kv_head, d1 / 2,
+                        cache_v_codes[kv_cache_i4_code_index<Geometry, D>(physical_page, kv_head, d1 / 2,
                                                                      page_offset)] =
                             kv_cache_pack_i4(kv_cache_i4_quant_code(vv1, v_inv),
                                            kv_cache_i4_quant_code(vv1_hi, v_inv));
                     }
                 } else {
                     auto* cache_v_i8 = reinterpret_cast<std::int8_t*>(cache_v_codes);
-                    cache_v_i8[kv_cache_int8_quant_code_index<Geometry>(physical_page, kv_head, d0,
+                    cache_v_i8[kv_cache_int8_quant_code_index<Geometry, D>(physical_page, kv_head, d0,
                                                                   page_offset)] =
                         kv_cache_int8_quant_code(vv0, v_inv);
-                    cache_v_i8[kv_cache_int8_quant_code_index<Geometry>(physical_page, kv_head, d1,
+                    cache_v_i8[kv_cache_int8_quant_code_index<Geometry, D>(physical_page, kv_head, d1,
                                                                   page_offset)] =
                         kv_cache_int8_quant_code(vv1, v_inv);
                 }
             }
             if (lane == 0) {
                 const std::int64_t so =
-                    kv_cache_int8_quant_scale_index<Geometry>(physical_page, kv_head, grp, page_offset);
+                    kv_cache_int8_quant_scale_index<Geometry, D>(physical_page, kv_head, grp, page_offset);
                 cache_k_scale[so] = ksh;
                 cache_v_scale[so] = vsh;
             }
@@ -387,13 +390,20 @@ __launch_bounds__(WarpsPerCta * 32, MinBlocksPerSm) __global__
         for (int key_l = tid; key_l < Bc; key_l += Threads) {
             const int key = tile_k0 + key_l;
             if (key >= split_start && key < split_end) {
-                const std::int64_t off = kv_cache_int8_quant_scale_index<Geometry>(
+                const std::int64_t off = kv_cache_int8_quant_scale_index<Geometry, D>(
                     physical_page, kv_head, 0, key & kPagedKVPageMask);
-                ninfer::ops::cp_async<8>(&k_scale_s[key_l * Groups], &cache_k_scale[off]);
-                ninfer::ops::cp_async<8>(&v_scale_s[key_l * Groups], &cache_v_scale[off]);
+                ninfer::ops::cp_async<Groups * static_cast<int>(sizeof(__half))>(
+                    &k_scale_s[key_l * Groups], &cache_k_scale[off]);
+                ninfer::ops::cp_async<Groups * static_cast<int>(sizeof(__half))>(
+                    &v_scale_s[key_l * Groups], &cache_v_scale[off]);
             } else {
-                store_vec(&k_scale_s[key_l * Groups], make_int2(0, 0));
-                store_vec(&v_scale_s[key_l * Groups], make_int2(0, 0));
+                if constexpr (Groups == 8) {
+                    store_vec(&k_scale_s[key_l * Groups], make_int4(0, 0, 0, 0));
+                    store_vec(&v_scale_s[key_l * Groups], make_int4(0, 0, 0, 0));
+                } else {
+                    store_vec(&k_scale_s[key_l * Groups], make_int2(0, 0));
+                    store_vec(&v_scale_s[key_l * Groups], make_int2(0, 0));
+                }
             }
         }
 #pragma unroll 1
@@ -417,24 +427,24 @@ __launch_bounds__(WarpsPerCta * 32, MinBlocksPerSm) __global__
                     std::int8_t* dst = &k_i8[key_l * D + causal_small_t_tc_swz(key_l, dc * 8) * 2];
                     *reinterpret_cast<uint64_t*>(&dst[0]) = *reinterpret_cast<const uint64_t*>(dec8_0);
                     *reinterpret_cast<uint64_t*>(&dst[8]) = *reinterpret_cast<const uint64_t*>(dec8_1);
-                    const std::int64_t voff = kv_cache_i4_code_index<Geometry>(
+                    const std::int64_t voff = kv_cache_i4_code_index<Geometry, D>(
                         physical_page, kv_head, d / 2, key & kPagedKVPageMask);
                     kv_cache_unpack_i4x16(&cache_v_codes[voff], &v_i8[key_l * D + d]);
                 } else if constexpr (PackedK) {
-                    const std::int64_t koff = kv_cache_i4_code_index<Geometry>(
+                    const std::int64_t koff = kv_cache_i4_code_index<Geometry, D>(
                         physical_page, kv_head, d / 2, key & kPagedKVPageMask);
                     std::int8_t* dst = &k_i8[key_l * D + causal_small_t_tc_swz(key_l, dc * 8) * 2];
                     kv_cache_unpack_i4x16(&reinterpret_cast<const std::uint8_t*>(cache_k_i8)[koff], dst);
-                    const std::int64_t voff = kv_cache_i4_code_index<Geometry>(
+                    const std::int64_t voff = kv_cache_i4_code_index<Geometry, D>(
                         physical_page, kv_head, d / 2, key & kPagedKVPageMask);
                     kv_cache_unpack_i4x16(&cache_v_codes[voff], &v_i8[key_l * D + d]);
                 } else {
-                    const std::int64_t off = kv_cache_int8_quant_code_index<Geometry>(
+                    const std::int64_t off = kv_cache_int8_quant_code_index<Geometry, D>(
                         physical_page, kv_head, d, key & kPagedKVPageMask);
                     std::int8_t* dst = &k_i8[key_l * D + causal_small_t_tc_swz(key_l, dc * 8) * 2];
                     ninfer::ops::cp_async<16>(dst, &cache_k_i8[off]);
                     if constexpr (PackedV) {
-                        const std::int64_t voff = kv_cache_i4_code_index<Geometry>(
+                        const std::int64_t voff = kv_cache_i4_code_index<Geometry, D>(
                             physical_page, kv_head, d / 2, key & kPagedKVPageMask);
                         kv_cache_unpack_i4x16(&cache_v_codes[voff], &v_i8[key_l * D + d]);
                     } else {
@@ -607,9 +617,15 @@ __launch_bounds__(WarpsPerCta * 32, MinBlocksPerSm) __global__
                 __half* dst     = &v_f16[key_l * D + causal_small_t_tc_swz(key_l, d)];
                 if (key >= split_start && key < split_end) {
                     const int grp = d >> 6;
-                    float vs      = 0.0f;
-                    if ((lane & 7) == 0) { vs = __half2float(v_scale_s[key_l * Groups + grp]); }
-                    vs                = __shfl_sync(FullMask, vs, grp * 8);
+                    float vs = 0.0f;
+                    if constexpr (Groups <= 4) {
+                        if ((lane & 7) == 0) {
+                            vs = __half2float(v_scale_s[key_l * Groups + grp]);
+                        }
+                        vs = __shfl_sync(FullMask, vs, grp * 8);
+                    } else {
+                        vs = __half2float(v_scale_s[key_l * Groups + grp]);
+                    }
                     const int2 raw    = load_vec<int2>(&v_i8[key_l * D + d]);
                     const auto* codes = reinterpret_cast<const std::int8_t*>(&raw);
                     int4 values;

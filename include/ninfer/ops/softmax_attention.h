@@ -184,6 +184,34 @@ void causal_sliding_softmax_attention(const Tensor& q, const Tensor& k, const Te
                                       Tensor& out, cudaStream_t stream);
 
 /**
+ * Page-local causal full attention with fused compressed-cache publication.
+ *
+ * The exact registered profile is D=512, Hq=32, Hkv=4, scale=1.0, B=1, T=1..64, and
+ * RK4V4-E8 paged K/V. The caller supplies sequential device I32 positions [T] that stay within
+ * one logical 64-token page. q/out are BF16 [512,32,T], k/v are BF16 [512,4,T], and every query
+ * at absolute position p attends exactly cache rows [0,p]. Current K/V cross the persistent codec
+ * boundary before they are observed. The cache table maps absolute logical pages directly.
+ *
+ * The caller guarantees all prior rows are populated and max(position)+1 lies in envelope. The
+ * envelope is a host execution/workspace promise and does not change the visible set. Inputs and
+ * block table remain unchanged; addressed cache rows and all output rows are overwritten. The Op
+ * allocates only bounded split-reduction state from caller-owned workspace and no context-sized
+ * attention matrix or decoded-cache materialization.
+ */
+void causal_full_softmax_attention(const Tensor& q, const Tensor& k, const Tensor& v,
+                                   const Tensor& positions, AttentionHeadGeometry geometry,
+                                   float scale, PagedKVLayerView cache,
+                                   CausalAttentionExecutionEnvelope envelope,
+                                   WorkspaceArena& workspace, Tensor& out,
+                                   cudaStream_t stream);
+
+/** Return caller-owned scratch capacity for every legal T in the inclusive interval. */
+[[nodiscard]] std::size_t causal_full_softmax_attention_workspace_capacity_bytes(
+    AttentionHeadGeometry geometry, KvCacheStorage cache_storage,
+    CausalAttentionExecutionEnvelope envelope, std::int32_t min_tokens,
+    std::int32_t max_tokens);
+
+/**
  * Non-causal grouped-query attention over persistent context plus one live query block.
  *
  * The registered profile is D=128, Hq=32, Hkv=8 (group 4), scale=1/sqrt(128), T=1..16, and

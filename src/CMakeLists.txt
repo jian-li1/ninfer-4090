@@ -106,11 +106,13 @@ add_library(ninfer_ops STATIC
   # Softmax Attention and KV-cache state transitions.
   ops/softmax_attention/dense/causal_cache/causal_softmax_attention.cpp
   ops/softmax_attention/dense/causal_cache/causal_sliding_softmax_attention.cpp
+  ops/softmax_attention/dense/causal_cache/causal_full_softmax_attention.cpp
   ops/softmax_attention/dense/causal_cache/small_t.cu
   ops/softmax_attention/dense/causal_cache/small_t_fp8.cu
   ops/softmax_attention/dense/causal_cache/small_t_nvfp4.cu
   ops/softmax_attention/dense/causal_cache/small_t_k8v4.cu
   ops/softmax_attention/dense/causal_cache/prompt.cu
+  ops/softmax_attention/dense/causal_cache/global_d512.cu
   ops/softmax_attention/dense/causal_cache/prompt_fp8.cu
   ops/softmax_attention/dense/causal_cache/prompt_nvfp4.cu
   ops/softmax_attention/dense/causal_cache/prompt_k8v4.cu

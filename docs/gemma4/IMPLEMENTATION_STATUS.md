@@ -27,7 +27,7 @@ commit that completes each phase.
 | 5 | complete | Atomic heterogeneous local/global KV groups qualified through 32K |
 | 6 | complete | Exact E8 parity, retrieval gates, production throughput, and physical bytes for D256/D512 |
 | 7 | complete | D256 Q32/KV16 E8 ring attention is 4.68-19.56x faster than the reference path |
-| 8 | pending | Optimized D512 global attention |
+| 8 | complete | D512 GQA-8 global attention is correct through 128K and stable through 256K |
 | 9 | pending | 262,144-token target-only execution |
 | 10 | conditional | Shared global K/V latent cache; implement only if Phase 9/MTP/graph memory evidence triggers it |
 | 11 | pending | CUDA Graph decode |
@@ -202,6 +202,15 @@ Phase 0 full-suite result remains the regression baseline; all Phase 2 affected 
 - Shared causal-attention, KV append, and exact Gemma E8 codec regressions remain green. Commands,
   the complete timing table, and interpretation are in
   [the Phase 7 qualification](../benchmarks/gemma4-phase7-sliding-attention.md).
+
+## Phase 8 record
+
+- Added the exact public D512 Q32/KV4, scale-1.0 causal full-attention Op over the Phase 5 stable global page mapping and Phase 6 RK4V4-E8 codec. It publishes current K/V once and consumes compressed cache pages directly with no context-sized materialization.
+- The shallow SIMT online-softmax route and signed-int8 QK/FP16 PV tensor-core split route use the measured `max(128, 16*T)` visible-key crossover. Page-local prefill is tiled into at most four queries and reuses bounded FP32 partial workspace.
+- The independent FP64 oracle covers 128, 1K, 4K, 16K, and 128K visible rows; T=1/2/3/4/64; fragmented pages; tails; and guards. Relative L2 was 0.000422-0.001592 and maximum absolute error was at most 0.000225.
+- On RTX 4090, T=1 measured 144.128 us at 32K, 503.808 us at 128K, and 968.704 us at 256K. Compressed payload throughput reached 588.9 GB/s and the deep route was 5.79x faster than the provisional SIMT split kernel at 256K.
+- Public prefill beat the BF16 control by 2.61x at C=1K/T=16, 9.94x at C=4K/T=128, and 13.78x at C=8K/T=1024. Static resource inspection found 254-255 registers/thread, 10,304-19,584 static plus 65,536 dynamic shared bytes, and no stack/local spill.
+- Nsight Compute counter collection is blocked by host `ERR_NVGPUCTRPERM`; the exact attempted command and the complete correctness, timing, route, resource, and limitation record are in [the Phase 8 qualification](../benchmarks/gemma4-phase8-global-attention.md).
 
 ## Open blockers and limitations
 
