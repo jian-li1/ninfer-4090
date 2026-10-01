@@ -18,7 +18,8 @@ namespace {
     std::fprintf(stderr,
                  "error: %s\nusage: ninfer_gemma4_31b_it_long_context ARTIFACT "
                  "[--max-context N] [--prefill N] [--chunk N] [--token ID] "
-                 "[--tokens-file PATH] [--generate N] [--dump PATH] [--no-decode]\n",
+                 "[--tokens-file PATH] [--generate N] [--dump PATH] [--cuda-graph] "
+                 "[--qualify-graph-transactions] [--no-decode]\n",
                  message);
     std::exit(2);
 }
@@ -78,6 +79,11 @@ int main(int argc, char** argv) {
             options.run_deep_decode = false;
         } else if (argument == "--dump") {
             options.dump_directory = next("--dump");
+        } else if (argument == "--cuda-graph") {
+            options.use_cuda_graph = true;
+        } else if (argument == "--qualify-graph-transactions") {
+            options.use_cuda_graph = true;
+            options.qualify_graph_transactions = true;
         } else if (argument == "--no-decode") {
             options.run_deep_decode = false;
         } else {
@@ -99,10 +105,16 @@ int main(int argc, char** argv) {
         std::printf(
             "GEMMA4_LONG_CONTEXT max_context=%u frontier=%u weights=%zu kv_payload=%zu "
             "kv_metadata=%zu workspace=%zu free_weights=%zu free_cache=%zu free_workspace=%zu "
+            "free_graph=%zu graph_bytes=%zu largest_temporary=%zu graph_captures=%u "
+            "graph_replays=%u graph_existing_workspace=%u graph_transactions=%u "
             "prefill_ms=%.3f decode_ms=%.3f greedy=%d\n",
             options.maximum_context, result.final_frontier, result.weights_bytes,
             result.kv_payload_bytes, result.kv_metadata_bytes, result.workspace_bytes,
             result.free_after_weights, result.free_after_cache, result.free_after_workspace,
+            result.free_after_graph, result.graph_device_bytes,
+            result.largest_temporary_bytes, result.graph_capture_count,
+            result.graph_replay_count, result.graph_uses_existing_workspace ? 1U : 0U,
+            result.graph_transaction_checks_passed ? 1U : 0U,
             result.prefill_milliseconds, result.decode_milliseconds, result.greedy_token);
         if (!result.generated_tokens.empty()) {
             std::printf("GEMMA4_GENERATED_IDS=");

@@ -1,4 +1,5 @@
 #include "core/device.h"
+#include "core/decode_graph.h"
 #include "core/heterogeneous_kv_cache.h"
 #include "runtime/kv_groups.h"
 
@@ -297,6 +298,100 @@ void exercise_device_transactions() {
             "32K execution did not preserve bounded local and growing global residency");
 }
 
+void exercise_graph_transactions(cudaStream_t stream) {
+    const std::array specs{tiny_group(10, KvGroupRetention::SlidingWindow, 128),
+                           tiny_group(20, KvGroupRetention::FullHistory, 700)};
+    ninfer::LayoutBuilder builder;
+    const HeterogeneousKVCacheLayout layout =
+        ninfer::plan_heterogeneous_kv_cache(builder, specs);
+    ninfer::DeviceBuffer backing(builder.finish(256));
+    backing.fill(0);
+    HeterogeneousKVCache cache({backing.p, backing.bytes}, layout);
+    cache.activate(0, stream);
+
+    constexpr std::size_t local_entries = 17;
+    constexpr std::size_t global_entries = 512;
+    constexpr std::size_t observed_entries = local_entries + global_entries + 1;
+    ninfer::DeviceBuffer parameter(sizeof(std::int32_t));
+    ninfer::DeviceBuffer observed(observed_entries * sizeof(std::int32_t));
+
+    ninfer::DecodeGraphDefinition definition;
+    {
+        auto transaction = cache.begin_transaction(0, 0, 1, stream);
+        const auto local = transaction.execution_view(10);
+        const auto global = transaction.execution_view(20);
+        definition.capture(stream, [&] {
+            CUDA_CHECK(cudaMemcpyAsync(observed.p, local.block_table.data,
+                                       local_entries * sizeof(std::int32_t),
+                                       cudaMemcpyDeviceToDevice, stream));
+            CUDA_CHECK(cudaMemcpyAsync(
+                static_cast<std::int32_t*>(observed.p) + local_entries,
+                global.block_table.data, global_entries * sizeof(std::int32_t),
+                cudaMemcpyDeviceToDevice, stream));
+            CUDA_CHECK(cudaMemcpyAsync(
+                static_cast<std::int32_t*>(observed.p) + local_entries + global_entries,
+                parameter.p, sizeof(std::int32_t), cudaMemcpyDeviceToDevice, stream));
+        });
+        transaction.rollback();
+    }
+    ninfer::DecodeGraphExecutable executable;
+    executable.instantiate(definition);
+    executable.upload(stream);
+
+    const auto replay = [&](std::uint32_t first, bool commit) {
+        auto transaction = cache.begin_transaction(0, first, 1, stream);
+        const auto staged_local = transaction.execution_view(10);
+        const auto staged_global = transaction.execution_view(20);
+        const std::vector<std::int32_t> expected_local = read_table(staged_local.block_table);
+        const std::vector<std::int32_t> expected_global = read_table(staged_global.block_table);
+        const auto committed_state = read_state(staged_local.state);
+        require(committed_state[1] == static_cast<std::int32_t>(first),
+                "graph transaction exposed a staging target as committed state");
+        const std::int32_t logical_position = static_cast<std::int32_t>(first);
+        CUDA_CHECK(cudaMemcpyAsync(parameter.p, &logical_position, sizeof(logical_position),
+                                   cudaMemcpyHostToDevice, stream));
+        executable.launch(stream);
+        CUDA_CHECK(cudaStreamSynchronize(stream));
+        std::vector<std::int32_t> host(observed_entries);
+        observed.copy_to_host(host.data(), observed.bytes);
+        require(std::equal(expected_local.begin(), expected_local.end(), host.begin()),
+                "graph replay observed a stale local staging table");
+        require(std::equal(expected_global.begin(), expected_global.end(),
+                           host.begin() + static_cast<std::ptrdiff_t>(local_entries)),
+                "graph replay observed a stale global staging table");
+        require(host.back() == logical_position,
+                "graph replay observed a stale explicit logical position");
+        if (commit) {
+            transaction.commit(stream);
+            CUDA_CHECK(cudaStreamSynchronize(stream));
+        } else {
+            transaction.rollback();
+        }
+    };
+
+    replay(0, true);
+    commit_to(cache, 0, 1088);
+    auto wrapped_prefix = cache.checkpoint(0);
+    replay(1088, false);
+    require(cache.frontier(0) == 1088,
+            "graph transaction rollback changed the wrapped frontier");
+    replay(1088, true);
+    require(cache.frontier(0) == 1089 && cache.visible_begin(0, 10) == 65,
+            "graph transaction commit failed across local ring wrap");
+    commit_to(cache, 0, 1200);
+    cache.restore(0, wrapped_prefix, stream);
+    CUDA_CHECK(cudaStreamSynchronize(stream));
+    replay(1088, true);
+    require(cache.frontier(0) == 1089,
+            "graph replay failed after restoring a wrapped prefix");
+    while (cache.frontier(0) < 8193) {
+        commit_to(cache, 0, std::min(cache.frontier(0) + 2048U, 8193U));
+    }
+    replay(8193, true);
+    require(cache.frontier(0) == 8194 && cache.visible_begin(0, 20) == 0,
+            "graph replay failed at deep global context");
+}
+
 } // namespace
 
 int main() {
@@ -315,6 +410,7 @@ int main() {
     try {
         ninfer::DeviceContext context(0);
         exercise_device_transactions();
+        exercise_graph_transactions(context.stream);
         std::cout << "heterogeneous KV cache checks passed\n";
         return 0;
     } catch (const std::exception& error) {

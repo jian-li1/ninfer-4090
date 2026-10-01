@@ -34,6 +34,7 @@ The executable `--help` output is the exact source for command-line option spell
 - [Capability evaluation](../eval/README.md)
 - [Gemma 4 31B implementation status](gemma4/IMPLEMENTATION_STATUS.md)
 - [Gemma 4 31B pre-implementation baseline](benchmarks/gemma4-baseline-environment.md)
+- [Gemma 4 31B CUDA Graph qualification](benchmarks/gemma4-phase11-cuda-graphs.md)
 
 ## Maintainer references
 

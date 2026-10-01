@@ -101,7 +101,15 @@ ReferenceRunResult run_reference_prefix(const std::filesystem::path& artifact_pa
     const std::int32_t tokens = static_cast<std::int32_t>(token_ids.size());
     WorkspaceArena arena(checked_workspace_bytes(tokens));
     Tensor ids = arena.alloc(DType::I32, {tokens});
+    Tensor positions = arena.alloc(DType::I32, {tokens});
     CUDA_CHECK(cudaMemcpyAsync(ids.data, token_ids.data(), token_ids.size_bytes(),
+                               cudaMemcpyHostToDevice, device.stream));
+    std::vector<std::int32_t> host_positions(static_cast<std::size_t>(tokens));
+    for (std::int32_t token = 0; token < tokens; ++token) {
+        host_positions[static_cast<std::size_t>(token)] = token;
+    }
+    CUDA_CHECK(cudaMemcpyAsync(positions.data, host_positions.data(),
+                               host_positions.size() * sizeof(std::int32_t),
                                cudaMemcpyHostToDevice, device.stream));
     Tensor hidden = arena.alloc(DType::BF16, {TextConfig::hidden, tokens});
     Tensor normalized = arena.alloc(DType::BF16, {TextConfig::hidden, tokens});
@@ -150,7 +158,7 @@ ReferenceRunResult run_reference_prefix(const std::filesystem::path& artifact_pa
         prepare_qkv(packed, layer_weights.attention.query_norm,
                     layer_weights.attention.key_norm, head_dim, kv_heads,
                     full ? TextConfig::full_rope_theta : TextConfig::sliding_rope_theta,
-                    full ? TextConfig::full_rotary_active_dim / 2 : head_dim / 2, 0,
+                    full ? TextConfig::full_rotary_active_dim / 2 : head_dim / 2, positions,
                     query, key, value, device.stream);
         if (detailed_layer(layer)) {
             const std::string prefix = "target_layer" + std::to_string(layer);

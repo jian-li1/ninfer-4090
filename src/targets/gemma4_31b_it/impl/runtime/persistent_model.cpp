@@ -11,6 +11,7 @@
 #include "artifact/materializer.h"
 #include "artifact/reader.h"
 #include "core/arena.h"
+#include "core/decode_graph.h"
 #include "core/device.h"
 #include "core/heterogeneous_kv_cache.h"
 #include "core/layout.h"
@@ -99,48 +100,82 @@ void write_bf16(const std::filesystem::path& directory, const std::string& name,
     if (!output) throw std::runtime_error("failed to write Gemma persistent parity dump");
 }
 
-std::int32_t execute_chunk(const ModelWeights& weights, HeterogeneousKVCache& cache,
-                           std::uint32_t first, std::span<const std::int32_t> input_tokens,
-                           WorkspaceArena& activations,
-                           WorkspaceArena& attention_workspace, cudaStream_t stream,
-                           bool produce_logits,
-                           const std::filesystem::path& dump_directory = {}) {
-    const std::int32_t tokens = static_cast<std::int32_t>(input_tokens.size());
-    auto activation_scope = activations.scope();
-    Tensor ids = activations.alloc(DType::I32, {tokens});
-    Tensor positions = activations.alloc(DType::I32, {tokens});
-    std::vector<std::int32_t> host_positions(static_cast<std::size_t>(tokens));
-    for (std::int32_t token = 0; token < tokens; ++token) {
-        host_positions[static_cast<std::size_t>(token)] =
-            static_cast<std::int32_t>(first) + token;
+struct ModelBuffers {
+    Tensor ids;
+    Tensor positions;
+    Tensor hidden;
+    Tensor normalized;
+    Tensor packed_storage;
+    Tensor query_storage;
+    Tensor key_storage;
+    Tensor value_storage;
+    Tensor attended_storage;
+    Tensor projected;
+    Tensor post;
+    Tensor product;
+    Tensor feedforward;
+    Tensor final_hidden;
+    Tensor logits;
+};
+
+ModelBuffers allocate_model_buffers(WorkspaceArena& activations, std::int32_t tokens) {
+    return {
+        .ids = activations.alloc(DType::I32, {tokens}),
+        .positions = activations.alloc(DType::I32, {tokens}),
+        .hidden = activations.alloc(DType::BF16, {TextConfig::hidden, tokens}),
+        .normalized = activations.alloc(DType::BF16, {TextConfig::hidden, tokens}),
+        .packed_storage = activations.alloc(DType::BF16, {43008, tokens}),
+        .query_storage = activations.alloc(
+            DType::BF16, {TextConfig::full_head_dim, TextConfig::query_heads, tokens}),
+        .key_storage = activations.alloc(
+            DType::BF16, {TextConfig::full_head_dim, TextConfig::sliding_kv_heads, tokens}),
+        .value_storage = activations.alloc(
+            DType::BF16, {TextConfig::full_head_dim, TextConfig::sliding_kv_heads, tokens}),
+        .attended_storage = activations.alloc(
+            DType::BF16, {TextConfig::full_head_dim, TextConfig::query_heads, tokens}),
+        .projected = activations.alloc(DType::BF16, {TextConfig::hidden, tokens}),
+        .post = activations.alloc(DType::BF16, {TextConfig::hidden, tokens}),
+        .product = activations.alloc(DType::BF16, {TextConfig::intermediate, tokens}),
+        .feedforward = activations.alloc(DType::BF16, {TextConfig::hidden, tokens}),
+        .final_hidden = activations.alloc(DType::BF16, {TextConfig::hidden, tokens}),
+        .logits = activations.alloc(DType::FP32, {TextConfig::vocabulary}),
+    };
+}
+
+void upload_decode_parameters(ModelBuffers& buffers, std::uint32_t first,
+                              std::span<const std::int32_t> input_tokens,
+                              cudaStream_t stream) {
+    std::vector<std::int32_t> host_positions(input_tokens.size());
+    for (std::size_t token = 0; token < input_tokens.size(); ++token) {
+        host_positions[token] = static_cast<std::int32_t>(first + token);
     }
-    CUDA_CHECK(cudaMemcpyAsync(ids.data, input_tokens.data(),
-                               input_tokens.size_bytes(),
+    CUDA_CHECK(cudaMemcpyAsync(buffers.ids.data, input_tokens.data(), input_tokens.size_bytes(),
                                cudaMemcpyHostToDevice, stream));
-    CUDA_CHECK(cudaMemcpyAsync(positions.data, host_positions.data(),
+    CUDA_CHECK(cudaMemcpyAsync(buffers.positions.data, host_positions.data(),
                                host_positions.size() * sizeof(std::int32_t),
                                cudaMemcpyHostToDevice, stream));
+}
 
-    Tensor hidden = activations.alloc(DType::BF16, {TextConfig::hidden, tokens});
-    Tensor normalized = activations.alloc(DType::BF16, {TextConfig::hidden, tokens});
-    Tensor packed_storage = activations.alloc(DType::BF16, {43008, tokens});
-    Tensor query_storage = activations.alloc(
-        DType::BF16, {TextConfig::full_head_dim, TextConfig::query_heads, tokens});
-    Tensor key_storage = activations.alloc(
-        DType::BF16, {TextConfig::full_head_dim, TextConfig::sliding_kv_heads, tokens});
-    Tensor value_storage = activations.alloc(
-        DType::BF16, {TextConfig::full_head_dim, TextConfig::sliding_kv_heads, tokens});
-    Tensor attended_storage = activations.alloc(
-        DType::BF16, {TextConfig::full_head_dim, TextConfig::query_heads, tokens});
-    Tensor projected = activations.alloc(DType::BF16, {TextConfig::hidden, tokens});
-    Tensor post = activations.alloc(DType::BF16, {TextConfig::hidden, tokens});
-    Tensor product = activations.alloc(DType::BF16, {TextConfig::intermediate, tokens});
-    Tensor feedforward = activations.alloc(DType::BF16, {TextConfig::hidden, tokens});
-    Tensor final_hidden = activations.alloc(DType::BF16, {TextConfig::hidden, tokens});
-    Tensor logits = activations.alloc(DType::FP32, {TextConfig::vocabulary});
+void enqueue_model(const ModelWeights& weights, HeterogeneousKVTransaction& transaction,
+                   ModelBuffers& buffers,
+                   ops::CausalAttentionExecutionEnvelope full_envelope,
+                   WorkspaceArena& attention_workspace, cudaStream_t stream,
+                   bool produce_logits,
+                   const std::filesystem::path& dump_directory = {}) {
+    const std::int32_t tokens = buffers.ids.ne[0];
+    Tensor& hidden = buffers.hidden;
+    Tensor& normalized = buffers.normalized;
+    Tensor& packed_storage = buffers.packed_storage;
+    Tensor& query_storage = buffers.query_storage;
+    Tensor& key_storage = buffers.key_storage;
+    Tensor& value_storage = buffers.value_storage;
+    Tensor& attended_storage = buffers.attended_storage;
+    Tensor& projected = buffers.projected;
+    Tensor& post = buffers.post;
+    Tensor& product = buffers.product;
+    Tensor& feedforward = buffers.feedforward;
 
-    auto transaction = cache.begin_transaction(0, first, static_cast<std::uint32_t>(tokens), stream);
-    ops::embedding(ids, weights.embedding, hidden, stream);
+    ops::embedding(buffers.ids, weights.embedding, hidden, stream);
     scale_embedding(hidden, TextConfig::embedding_scale_bf16, stream);
     write_bf16(dump_directory, "persistent_embeddings", hidden);
 
@@ -172,7 +207,7 @@ std::int32_t execute_chunk(const ModelWeights& weights, HeterogeneousKVCache& ca
                     layer_weights.attention.key_norm, head_dim, kv_heads,
                     full ? TextConfig::full_rope_theta : TextConfig::sliding_rope_theta,
                     full ? TextConfig::full_rotary_active_dim / 2 : head_dim / 2,
-                    static_cast<std::int32_t>(first), query, key, value, stream);
+                    buffers.positions, query, key, value, stream);
         if (!dump_directory.empty() && (layer == 0 || layer == 5)) {
             const std::string prefix = "persistent_layer" + std::to_string(layer);
             write_bf16(dump_directory, prefix + "_q", query);
@@ -183,15 +218,13 @@ std::int32_t execute_chunk(const ModelWeights& weights, HeterogeneousKVCache& ca
         const TextKvLayerAddress address = text_kv_layer_address(static_cast<std::uint32_t>(layer));
         PagedKVLayerView view = layer_cache(transaction, address, head_dim, kv_heads);
         if (full) {
-            const ops::CausalAttentionExecutionEnvelope envelope{
-                first + 1U, first + static_cast<std::uint32_t>(tokens)};
-            ops::causal_full_softmax_attention(query, key, value, positions, kFullGeometry, 1.0F,
-                                               view, envelope, attention_workspace, attended,
-                                               stream);
+            ops::causal_full_softmax_attention(
+                query, key, value, buffers.positions, kFullGeometry, 1.0F, view,
+                full_envelope, attention_workspace, attended, stream);
         } else {
             ops::causal_sliding_softmax_attention(
-                query, key, value, positions, kSlidingGeometry, TextConfig::sliding_window, 1.0F,
-                view, attended, stream);
+                query, key, value, buffers.positions, kSlidingGeometry,
+                TextConfig::sliding_window, 1.0F, view, attended, stream);
         }
         if (!dump_directory.empty() && (layer == 0 || layer == 5)) {
             write_bf16(dump_directory, "persistent_layer" + std::to_string(layer) +
@@ -216,14 +249,17 @@ std::int32_t execute_chunk(const ModelWeights& weights, HeterogeneousKVCache& ca
         write_bf16(dump_directory, "persistent_layer" + std::to_string(layer) + "_output",
                    hidden);
     }
-    transaction.commit(stream);
 
-    if (!produce_logits) return -1;
+    if (!produce_logits) return;
     ops::rmsnorm(hidden, weights.final_norm, TextConfig::rms_epsilon, false,
-                 final_hidden, stream);
-    Tensor last_hidden = final_hidden.slice(1, tokens - 1, 1).view({TextConfig::hidden});
+                 buffers.final_hidden, stream);
+    Tensor last_hidden =
+        buffers.final_hidden.slice(1, tokens - 1, 1).view({TextConfig::hidden});
     fp8_tied_logits(last_hidden, weights.embedding, TextConfig::final_logit_softcap,
-                    logits, stream);
+                    buffers.logits, stream);
+}
+
+std::int32_t read_greedy_token(const Tensor& logits, cudaStream_t stream) {
     std::vector<float> host_logits(TextConfig::vocabulary);
     CUDA_CHECK(cudaMemcpyAsync(host_logits.data(), logits.data,
                                host_logits.size() * sizeof(float), cudaMemcpyDeviceToHost,
@@ -232,6 +268,94 @@ std::int32_t execute_chunk(const ModelWeights& weights, HeterogeneousKVCache& ca
     return static_cast<std::int32_t>(
         std::max_element(host_logits.begin(), host_logits.end()) - host_logits.begin());
 }
+
+std::int32_t execute_chunk(const ModelWeights& weights, HeterogeneousKVCache& cache,
+                           std::uint32_t first, std::span<const std::int32_t> input_tokens,
+                           std::uint32_t maximum_context, WorkspaceArena& activations,
+                           WorkspaceArena& attention_workspace, cudaStream_t stream,
+                           bool produce_logits,
+                           const std::filesystem::path& dump_directory = {}) {
+    const std::int32_t tokens = static_cast<std::int32_t>(input_tokens.size());
+    auto activation_scope = activations.scope();
+    ModelBuffers buffers = allocate_model_buffers(activations, tokens);
+    upload_decode_parameters(buffers, first, input_tokens, stream);
+    auto transaction = cache.begin_transaction(0, first, static_cast<std::uint32_t>(tokens), stream);
+    const ops::CausalAttentionExecutionEnvelope envelope =
+        tokens == 1 ? ops::CausalAttentionExecutionEnvelope{1, maximum_context}
+                    : ops::CausalAttentionExecutionEnvelope{
+                          first + 1U, first + static_cast<std::uint32_t>(tokens)};
+    enqueue_model(weights, transaction, buffers, envelope, attention_workspace, stream,
+                  produce_logits, dump_directory);
+    transaction.commit(stream);
+    return produce_logits ? read_greedy_token(buffers.logits, stream) : -1;
+}
+
+class PersistentDecodeGraph {
+public:
+    void capture(const ModelWeights& weights, HeterogeneousKVCache& cache,
+                 std::uint32_t maximum_context, WorkspaceArena& activations,
+                 WorkspaceArena& attention_workspace, cudaStream_t stream) {
+        if (executable_.ready()) {
+            throw std::logic_error("Gemma decode graph cannot be recaptured");
+        }
+        CUDA_CHECK(cudaStreamSynchronize(stream));
+        const std::size_t free_before = free_device_bytes();
+        {
+            auto activation_scope = activations.scope();
+            ModelBuffers buffers = allocate_model_buffers(activations, 1);
+            const std::int32_t token = 0;
+            const std::uint32_t first = cache.frontier(0);
+            upload_decode_parameters(buffers, first,
+                                     std::span<const std::int32_t>(&token, 1), stream);
+            auto transaction = cache.begin_transaction(0, first, 1, stream);
+            const ops::CausalAttentionExecutionEnvelope envelope{1, maximum_context};
+            definition_.capture(stream, [&] {
+                enqueue_model(weights, transaction, buffers, envelope, attention_workspace,
+                              stream, true);
+            });
+            transaction.rollback();
+        }
+        executable_.instantiate(definition_);
+        executable_.upload(stream);
+        CUDA_CHECK(cudaStreamSynchronize(stream));
+        const std::size_t free_after = free_device_bytes();
+        device_bytes_ = free_before > free_after ? free_before - free_after : 0;
+        capture_count_ = 1;
+    }
+
+    std::int32_t replay(HeterogeneousKVCache& cache, std::uint32_t first,
+                        std::int32_t input_token, WorkspaceArena& activations,
+                        cudaStream_t stream, bool commit) {
+        if (!executable_.ready()) {
+            throw std::logic_error("Gemma decode graph was not captured");
+        }
+        auto activation_scope = activations.scope();
+        ModelBuffers buffers = allocate_model_buffers(activations, 1);
+        upload_decode_parameters(buffers, first,
+                                 std::span<const std::int32_t>(&input_token, 1), stream);
+        auto transaction = cache.begin_transaction(0, first, 1, stream);
+        executable_.launch(stream);
+        ++replay_count_;
+        if (commit) {
+            transaction.commit(stream);
+            return read_greedy_token(buffers.logits, stream);
+        }
+        const std::int32_t greedy = read_greedy_token(buffers.logits, stream);
+        transaction.rollback();
+        return greedy;
+    }
+
+    [[nodiscard]] std::size_t device_bytes() const noexcept { return device_bytes_; }
+    [[nodiscard]] std::uint32_t capture_count() const noexcept { return capture_count_; }
+    [[nodiscard]] std::uint32_t replay_count() const noexcept { return replay_count_; }
+
+private:
+    DecodeGraphDefinition definition_;
+    DecodeGraphExecutable executable_;
+    std::size_t device_bytes_ = 0;
+    std::uint32_t capture_count_ = 0;
+    std::uint32_t replay_count_ = 0;
+};
 
 } // namespace
 
@@ -248,6 +372,8 @@ PersistentRunResult run_persistent_target(const std::filesystem::path& artifact_
         prefill_tokens == 0 || options.chunk_tokens == 0 || options.chunk_tokens > 64 ||
         prefill_tokens + appended_tokens > options.maximum_context ||
         (options.generation_tokens > 0 && options.run_deep_decode) ||
+        (options.qualify_graph_transactions &&
+         (!options.use_cuda_graph || appended_tokens == 0)) ||
         options.input_token < 0 ||
         options.input_token >= static_cast<std::int32_t>(TextConfig::vocabulary)) {
         throw std::invalid_argument("Gemma persistent target options are invalid");
@@ -300,7 +426,10 @@ PersistentRunResult run_persistent_target(const std::filesystem::path& artifact_
     WorkspaceArena activations({activation_backing.p, activation_backing.bytes});
     WorkspaceArena attention_workspace({attention_backing.p, attention_backing.bytes});
     result.workspace_bytes = activation_backing.bytes + attention_backing.bytes;
+    result.largest_temporary_bytes =
+        std::max(activation_backing.bytes, attention_backing.bytes);
     result.free_after_workspace = free_device_bytes();
+    result.free_after_graph = result.free_after_workspace;
 
     EventPair timer;
     timer.start(device.stream);
@@ -320,34 +449,76 @@ PersistentRunResult run_persistent_target(const std::filesystem::path& artifact_
             chunk = std::span<const std::int32_t>(options.input_tokens).subspan(first, count);
         }
         const std::int32_t greedy = execute_chunk(
-            weights, cache, first, chunk, activations, attention_workspace, device.stream,
-            produce_logits,
+            weights, cache, first, chunk, options.maximum_context, activations,
+            attention_workspace, device.stream, produce_logits,
             produce_logits ? options.dump_directory : std::filesystem::path{});
         if (produce_logits) result.greedy_token = greedy;
         first += static_cast<std::uint32_t>(count);
     }
     result.prefill_milliseconds = timer.stop(device.stream);
 
+    PersistentDecodeGraph decode_graph;
+    if (options.use_cuda_graph && appended_tokens > 0) {
+        decode_graph.capture(weights, cache, options.maximum_context, activations,
+                             attention_workspace, device.stream);
+        result.graph_device_bytes = decode_graph.device_bytes();
+        result.graph_capture_count = decode_graph.capture_count();
+        result.free_after_graph = free_device_bytes();
+    }
+
+    std::int32_t rollback_greedy = -1;
+    if (options.qualify_graph_transactions) {
+        const std::int32_t token = options.generation_tokens > 0
+                                       ? result.greedy_token
+                                       : options.input_token;
+        rollback_greedy = decode_graph.replay(cache, first, token, activations,
+                                              device.stream, false);
+        if (cache.frontier(0) != first) {
+            throw std::runtime_error("Gemma graph rollback published its transaction");
+        }
+    }
+
+    const auto decode_one = [&](std::int32_t token) {
+        if (options.use_cuda_graph) {
+            return decode_graph.replay(cache, first, token, activations, device.stream, true);
+        }
+        return execute_chunk(weights, cache, first,
+                             std::span<const std::int32_t>(&token, 1),
+                             options.maximum_context, activations, attention_workspace,
+                             device.stream, true);
+    };
+
     if (options.generation_tokens > 0) {
         result.generated_tokens.push_back(result.greedy_token);
         timer.start(device.stream);
         while (result.generated_tokens.size() < options.generation_tokens) {
             const std::int32_t token = result.generated_tokens.back();
-            result.greedy_token = execute_chunk(weights, cache, first,
-                                                 std::span<const std::int32_t>(&token, 1),
-                                                 activations, attention_workspace,
-                                                 device.stream, true);
+            result.greedy_token = decode_one(token);
+            if (rollback_greedy >= 0) {
+                if (result.greedy_token != rollback_greedy) {
+                    throw std::runtime_error(
+                        "Gemma graph rollback replay changed its output");
+                }
+                rollback_greedy = -1;
+                result.graph_transaction_checks_passed = true;
+            }
             result.generated_tokens.push_back(result.greedy_token);
             ++first;
         }
         result.decode_milliseconds = timer.stop(device.stream);
     } else if (options.run_deep_decode) {
         timer.start(device.stream);
-        result.greedy_token = execute_chunk(
-            weights, cache, first, std::span<const std::int32_t>(&options.input_token, 1),
-            activations, attention_workspace, device.stream, true);
+        result.greedy_token = decode_one(options.input_token);
         result.decode_milliseconds = timer.stop(device.stream);
+        if (rollback_greedy >= 0) {
+            if (result.greedy_token != rollback_greedy) {
+                throw std::runtime_error("Gemma graph rollback replay changed its output");
+            }
+            result.graph_transaction_checks_passed = true;
+        }
     }
+    result.graph_capture_count = decode_graph.capture_count();
+    result.graph_replay_count = decode_graph.replay_count();
     result.final_frontier = cache.frontier(0);
     return result;
 }

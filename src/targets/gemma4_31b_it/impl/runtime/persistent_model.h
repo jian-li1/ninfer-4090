@@ -16,6 +16,8 @@ struct PersistentRunOptions {
     std::uint32_t generation_tokens = 0;
     std::filesystem::path dump_directory;
     bool run_deep_decode = true;
+    bool use_cuda_graph = false;
+    bool qualify_graph_transactions = false;
     int device_id = 0;
 };
 
@@ -28,7 +30,14 @@ struct PersistentRunResult {
     std::size_t free_after_weights = 0;
     std::size_t free_after_cache = 0;
     std::size_t free_after_workspace = 0;
+    std::size_t free_after_graph = 0;
+    std::size_t graph_device_bytes = 0;
+    std::size_t largest_temporary_bytes = 0;
     std::uint32_t final_frontier = 0;
+    std::uint32_t graph_capture_count = 0;
+    std::uint32_t graph_replay_count = 0;
+    bool graph_transaction_checks_passed = false;
+    bool graph_uses_existing_workspace = true;
     std::vector<std::int32_t> generated_tokens;
     double prefill_milliseconds = 0.0;
     double decode_milliseconds = 0.0;

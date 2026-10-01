@@ -34,16 +34,22 @@ int main() {
         options.generation_tokens = 3;
         const auto whole_chunk = run_persistent_target(artifact, options);
         options.chunk_tokens = 3;
+        options.use_cuda_graph = true;
+        options.qualify_graph_transactions = true;
         const auto half_chunk = run_persistent_target(artifact, options);
         if (whole_chunk.generated_tokens != half_chunk.generated_tokens ||
             whole_chunk.generated_tokens.size() != options.generation_tokens ||
             whole_chunk.final_frontier != varied_ids.size() + options.generation_tokens - 1 ||
-            half_chunk.final_frontier != whole_chunk.final_frontier) {
-            std::cerr << "multi-token persistent Gemma target changed across chunk schedules\n";
+            half_chunk.final_frontier != whole_chunk.final_frontier ||
+            half_chunk.graph_capture_count != 1 || half_chunk.graph_replay_count != 3 ||
+            !half_chunk.graph_transaction_checks_passed) {
+            std::cerr << "graph Gemma decode changed normal execution or transaction state\n";
             return 1;
         }
 
-        options.generation_tokens = 1;
+        options.generation_tokens = 2;
+        options.use_cuda_graph = false;
+        options.qualify_graph_transactions = false;
         options.input_tokens.resize(65);
         for (std::size_t index = 0; index < options.input_tokens.size(); ++index) {
             options.input_tokens[index] = varied_ids[index % varied_ids.size()];
@@ -51,10 +57,31 @@ int main() {
         options.chunk_tokens = 64;
         const auto page_chunked = run_persistent_target(artifact, options);
         options.chunk_tokens = 32;
+        options.use_cuda_graph = true;
         const auto half_page_chunked = run_persistent_target(artifact, options);
-        if (page_chunked.greedy_token != half_page_chunked.greedy_token ||
-            page_chunked.final_frontier != 65 || half_page_chunked.final_frontier != 65) {
+        if (page_chunked.generated_tokens != half_page_chunked.generated_tokens ||
+            page_chunked.final_frontier != 66 || half_page_chunked.final_frontier != 66 ||
+            half_page_chunked.graph_capture_count != 1 ||
+            half_page_chunked.graph_replay_count != 1) {
             std::cerr << "persistent Gemma target changed across chunk schedules\n";
+            return 1;
+        }
+
+        options.maximum_context = 2048;
+        options.generation_tokens = 3;
+        options.input_tokens.resize(1088);
+        for (std::size_t index = 0; index < options.input_tokens.size(); ++index) {
+            options.input_tokens[index] = varied_ids[index % varied_ids.size()];
+        }
+        options.chunk_tokens = 64;
+        options.use_cuda_graph = false;
+        const auto eager_wrap = run_persistent_target(artifact, options);
+        options.use_cuda_graph = true;
+        const auto graph_wrap = run_persistent_target(artifact, options);
+        if (eager_wrap.generated_tokens != graph_wrap.generated_tokens ||
+            eager_wrap.final_frontier != 1090 || graph_wrap.final_frontier != 1090 ||
+            graph_wrap.graph_capture_count != 1 || graph_wrap.graph_replay_count != 2) {
+            std::cerr << "graph Gemma decode changed across the local ring wrap\n";
             return 1;
         }
         std::cout << "persistent Gemma target smoke passed\n";

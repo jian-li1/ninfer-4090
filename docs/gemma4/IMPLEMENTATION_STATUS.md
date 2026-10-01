@@ -30,7 +30,7 @@ commit that completes each phase.
 | 8 | complete | D512 GQA-8 global attention is correct through 128K and stable through 256K |
 | 9 | complete | 262K allocation plus exact five-needle 240K full-model semantic retrieval |
 | 10 | deferred/conditional | Re-evaluate after graph, MTP, selected draft width, and server residency measurements |
-| 11 | pending | CUDA Graph decode |
+| 11 | complete | One graph spans absolute positions, ring wrap, rollback/restore, and 262K with a 2.13% decode benefit |
 | 12 | pending | Official Gemma MTP1 |
 | 13 | pending | MTP2 through MTP6 measurement and selection |
 | 14 | pending | Prefix reuse and persistent continuation qualification |
@@ -221,6 +221,25 @@ Phase 0 full-suite result remains the regression baseline; all Phase 2 affected 
 - The full 31B model retrieved all five requested semantic values exactly from token positions 12K, 60K, 120K, 180K, and 228K in one 240,000-token prompt. Prefill took 707,340.688 ms; peak GPU use was 22,378 MiB.
 - The maintained real-artifact test preserves five-token BF16-reference greedy parity, varied three-token generation invariance, and 65-token output invariance across chunk schedules. The exact 262K layout/memory contract is covered without requiring the artifact.
 - Ordinary RK4V4-E8 exceeds the preferred 512 MiB reserve by 3.4x, so Phase 10 shared-global-latent cache is not triggered by Phase 9 capacity. Commands and the complete memory/execution record are in [the Phase 9 qualification](../benchmarks/gemma4-phase9-262k.md).
+
+## Phase 11 record
+
+- Captured the complete target T=1 decode with explicit device input-token and absolute-position
+  parameters. RoPE no longer captures the host frontier, and the graph never interprets committed
+  cache state as a staging target.
+- Local and global attention retain stable staging-table addresses while each transaction updates
+  their contents. Reservation is outside the graph; commit or rollback remains one atomic
+  heterogeneous-cache operation after replay.
+- Real-artifact eager/graph output matches across ordinary decode, a page crossing, the local-ring
+  wrap at position 1,088, and the maintained 4K semantic prompt. Device tests additionally cover
+  rollback, restored-prefix replay, and an 8,193-token global frontier with one executable.
+- On the 4K semantic prompt, 63 graph replays took 1,789.035 ms versus 1,828.036 ms eager: 28.397
+  versus 29.016 ms per replay, a 2.13% whole-model latency reduction. Generated IDs matched
+  exactly and capture count remained one.
+- The complete 262K target-only profile retains 1,774,911,488 bytes free after graph upload. The
+  isolated graph device allocation is 8,388,608 bytes, the largest existing temporary remains
+  33,554,432 bytes, and capture adds no model workspace residency. Commands and detailed memory
+  accounting are in [the Phase 11 qualification](../benchmarks/gemma4-phase11-cuda-graphs.md).
 
 ## Open blockers and limitations
 

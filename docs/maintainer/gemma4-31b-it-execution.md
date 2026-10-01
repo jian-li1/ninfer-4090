@@ -40,6 +40,26 @@ At 4096 tokens the conservative transient workspace estimate is below 1.5 GiB. T
 15.806 GiB resident target weights, the Phase 4 route remains within a 24 GiB RTX 4090 planning
 envelope. This is a correctness capacity statement, not a performance result.
 
+## Persistent decode graph
+
+The optimized persistent route streams page-local prefill chunks through the 60-layer schedule and
+uses the heterogeneous RK4V4-E8 cache as the semantic history boundary. Its T=1 decode may execute
+eagerly or through one CUDA Graph executable. Input token and absolute position are graph-safe
+device parameters. QKV preparation reads that position directly, preserving full and proportional
+RoPE across page boundaries and ring reuse.
+
+Each cache transaction prepares stable local/global staging tables before graph replay. Attention
+kernels use those tables and the explicit position; they do not infer the transaction target from
+the committed state tensor. Replay completes before the caller commits or rolls back both groups.
+The graph uses the maximum registered full-attention envelope, so global-prefix growth and local
+ring wrap preserve one topology and require no update or recapture. Prefill and parity dumps remain
+eager.
+
+The complete 262K graph profile reuses the existing activation and attention workspaces, adds an
+8 MiB measured graph allocation after warmup, and retains 1.653 GiB free on the RTX 4090. Exact
+correctness, state-transition, memory, and whole-model latency evidence is recorded in
+[the Phase 11 qualification](../benchmarks/gemma4-phase11-cuda-graphs.md).
+
 ## Qualification and first divergence
 
 Build `ninfer_gemma4_31b_it_reference`, then run the pinned six-token checkpoint prompt:
