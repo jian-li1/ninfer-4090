@@ -382,6 +382,12 @@ add_subdirectory(targets/qwen3_6)
 add_subdirectory(targets/qwen3_6_27b)
 add_subdirectory(targets/qwen3_6_35b_a3b)
 
+if(NINFER_BUILD_GEMMA4_31B_IT)
+  add_subdirectory(targets/gemma4)
+  add_subdirectory(targets/gemma4_31b_it)
+  target_compile_definitions(ninfer_engine PRIVATE NINFER_BUILD_GEMMA4_31B_IT=1)
+endif()
+
 target_link_libraries(ninfer_engine
   PRIVATE
     ninfer_artifact

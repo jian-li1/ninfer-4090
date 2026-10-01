@@ -2,6 +2,7 @@
 
 #include "ninfer/types.h"
 #include "runtime/engine/context_cost.h"
+#include "targets/registry_identity.h"
 #include <ninfer/targets/qwen3_6_27b/package.h>
 #include <ninfer/targets/qwen3_6_35b_a3b/package.h>
 

@@ -179,6 +179,15 @@ target_link_libraries(ninfer_qwen3_6_35b_a3b_dflash_load_plan_test PRIVATE CUDA:
 set_tests_properties(ninfer_qwen3_6_35b_a3b_dflash_load_plan_test
   PROPERTIES SKIP_RETURN_CODE 77)
 
+if(NINFER_BUILD_GEMMA4_31B_IT)
+  ninfer_add_test(ninfer_gemma4_31b_it_config_test
+    SOURCES targets/gemma4_31b_it/test_config.cpp
+    LIBRARIES ninfer_engine)
+  target_include_directories(ninfer_gemma4_31b_it_config_test PRIVATE
+    ${PROJECT_SOURCE_DIR}/src/targets/gemma4/export
+    ${PROJECT_SOURCE_DIR}/src/targets/gemma4_31b_it/export)
+endif()
+
 # Product protocol contracts.
 ninfer_add_test(ninfer_openai_schema_test
   SOURCES test_openai_schema.cpp

@@ -8,6 +8,11 @@
 #include "runtime/engine/kv_capacity.h"
 #include "runtime/engine/context_cost.h"
 
+#if NINFER_BUILD_GEMMA4_31B_IT
+#include <ninfer/targets/gemma4_31b_it/package.h>
+#endif
+
+#include <array>
 #include <chrono>
 #include <cstdint>
 #include <stdexcept>
@@ -194,6 +199,55 @@ Qwen3_6_35BA3BInstance::Qwen3_6_35BA3BInstance(std::unique_ptr<LoadedQwen3_6_35B
 
 Qwen3_6_35BA3BInstance::~Qwen3_6_35BA3BInstance() = default;
 
+const RegisteredTargetDescriptor*
+identify_registered_target(const artifact::ArtifactIdentity& identity) noexcept {
+    static constexpr std::array qwen_targets{
+        RegisteredTargetDescriptor{
+            .model_id   = Qwen3_6_27B::model_id,
+            .weights_id = "groupwise-int",
+            .target_key = Qwen3_6_27B::target_key,
+        },
+        RegisteredTargetDescriptor{
+            .model_id   = Qwen3_6_27B::model_id,
+            .weights_id = "nvfp4",
+            .target_key = Qwen3_6_27B::target_key,
+        },
+        RegisteredTargetDescriptor{
+            .model_id   = Qwen3_6_27B::qwen3_8_model_id,
+            .weights_id = "groupwise-int",
+            .target_key = Qwen3_6_27B::qwen3_8_target_key,
+        },
+        RegisteredTargetDescriptor{
+            .model_id   = Qwen3_6_27B::qwen3_8_model_id,
+            .weights_id = "nvfp4",
+            .target_key = Qwen3_6_27B::qwen3_8_target_key,
+        },
+        RegisteredTargetDescriptor{
+            .model_id   = Qwen3_6_35BA3B::model_id,
+            .weights_id = "groupwise-int",
+            .target_key = Qwen3_6_35BA3B::target_key,
+        },
+    };
+    for (const RegisteredTargetDescriptor& target : qwen_targets) {
+        if (identity.model_id == target.model_id && identity.weights_id == target.weights_id) {
+            return &target;
+        }
+    }
+#if NINFER_BUILD_GEMMA4_31B_IT
+    using Gemma4_31B_IT = gemma4_31b_it::Package;
+    static constexpr RegisteredTargetDescriptor gemma4_31b_it{
+        .model_id   = Gemma4_31B_IT::model_id,
+        .weights_id = Gemma4_31B_IT::weights_id,
+        .target_key = Gemma4_31B_IT::target_key,
+    };
+    if (identity.model_id == gemma4_31b_it.model_id &&
+        identity.weights_id == gemma4_31b_it.weights_id) {
+        return &gemma4_31b_it;
+    }
+#endif
+    return nullptr;
+}
+
 ConstructedTarget construct_target(const EngineOptions& options, DeviceContext& device) {
     validate_options(options);
     const auto load_start = Clock::now();
@@ -213,6 +267,11 @@ ConstructedTarget construct_target(const EngineOptions& options, DeviceContext& 
     if (identity.model_id == Qwen3_6_35BA3B::model_id) {
         return construct_registered<Qwen3_6_35BA3B, LoadedQwen3_6_35BA3B, Qwen3_6_35BA3BInstance>(
             options, device, reader, load_start, Qwen3_6_35BA3B::target_key);
+    }
+    if (const RegisteredTargetDescriptor* target = identify_registered_target(identity);
+        target != nullptr) {
+        throw std::runtime_error("registered target '" + std::string(target->target_key) +
+                                 "' does not provide execution in this implementation phase");
     }
     throw std::runtime_error("artifact identity '" + identity.model_id + "/" + identity.weights_id +
                              "' has no registered target for this device");

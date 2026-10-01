@@ -21,7 +21,7 @@ commit that completes each phase.
 |---:|---|---|
 | 0 | complete | Baseline environment, full test suites, and Qwen3.8 public-Engine smoke recorded |
 | 1 | complete | Immutable sources, compact semantic fixtures, real target logits, and assistant MTP1 |
-| 2 | pending | Compile-time Gemma family and target skeleton |
+| 2 | complete | Compile-time family/target packages, exact schedule, capabilities, and registry identity |
 | 3 | pending | `.ninfer` converter and exact binder |
 | 4 | pending | Reference-correct short-context execution |
 | 5 | pending | Heterogeneous physical KV groups |
@@ -80,6 +80,26 @@ These revisions are immutable. Small-resource hashes and every fixture-array has
   with four expected skips; the separately packaged eval suite passed 19/19 plus three subtests.
 - Qwen3.8 public-Engine regression smoke remained healthy: 125.8 decode tok/s, 99.0 overall tok/s,
   62.5% MTP acceptance, and 5.80 GiB free after startup.
+
+## Phase 2 record
+
+- Added peer `gemma4` family and `gemma4_31b_it` target packages behind
+  `NINFER_BUILD_GEMMA4_31B_IT`, enabled by default.
+- The immutable target configuration records all target and assistant dimensions, attention
+  geometry, RoPE parameters, quantization geometry, target K/V sharing, and layer types.
+- The generated target schedule is compile-time validated as 60 layers: 50 sliding and 10 full,
+  with full attention exactly at zero-based layers 5, 11, 17, ..., 59.
+- Model views represent the target and optional companion assistant without device allocation or
+  execution code. Capabilities are text required, MTP artifact-optional, and vision/audio
+  unavailable.
+- The cold registry identifies the exact synthetic identity
+  `gemma4-31b-it/groupwise-int`; existing Qwen identity lookup remains covered.
+- Gemma-enabled Engine and configuration-test builds passed, the configuration/registry test
+  passed, and an independent Gemma-disabled Engine build passed. No Gemma inference was attempted.
+
+The optional all-target rebuild could not finish because the root filesystem exhausted its final
+2.1 GiB while linking unrelated test executables, even after reducing the build to two jobs. The
+Phase 0 full-suite result remains the regression baseline; all Phase 2 affected targets passed.
 
 ## Open blockers and limitations
 
