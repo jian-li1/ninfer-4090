@@ -35,6 +35,8 @@ static_assert(AssistantConfig::layer_types ==
 static_assert(AssistantConfig::shared_target_kv_layers ==
               std::array<std::uint32_t, 4>{58, 58, 58, 59});
 static_assert(!AssistantConfig::owns_key_value_projections);
+static_assert(AssistantConfig::production_draft_size == 1);
+static_assert(AssistantConfig::maximum_draft_size == 6);
 
 [[noreturn]] void fail(std::string_view message) {
     std::cerr << "FAIL: " << message << '\n';

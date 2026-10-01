@@ -60,23 +60,23 @@ The complete 262K graph profile reuses the existing activation and attention wor
 correctness, state-transition, memory, and whole-model latency evidence is recorded in
 [the Phase 11 qualification](../benchmarks/gemma4-phase11-cuda-graphs.md).
 
-## MTP1 execution
+## MTP execution
 
 MTP1 optionally materializes the official four-layer assistant. Assistant layers 0-2 read the
 fixed-position sliding K/V published by target layer 58; layer 3 reads target layer 59's full K/V.
 The assistant has no cache and its attention calls never append to target state.
 
-Each proposal is verified by a target T=2 execution over `[current, draft]`. One heterogeneous
-transaction reserves both positions. Acceptance commits both; rejection uses prefix commit to
-publish only the current position across both cache groups and release any suffix-only pages. The
-T=2 Q4 and full-attention schedules preserve the T=1 arithmetic for the accepted-prefix column,
-so batching verification cannot alter ordinary greedy output.
+One through six fixed-position proposals are supported. Draft zero consumes the target hidden
+state and later drafts consume the prior assistant postprojection. A target T=2..7 execution
+verifies `[current, draft...]` in one heterogeneous transaction, which commits the accepted prefix
+plus the target correction. Q4, full attention, and sliding attention preserve ordinary T=1
+arithmetic for every verifier column, so batching cannot alter greedy output.
 
-The target verifier may use one CUDA Graph with stable activation and cache-table addresses;
-reservation and commit remain outside capture. Short and 8K-deep real-model checks match ordinary
-output exactly, accepted and rejected paths are both maintained, and the complete 262K MTP1
-profile retains 1.206 GiB free. Numerical, latency, and memory evidence is in
-[the Phase 12 qualification](../benchmarks/gemma4-phase12-mtp1.md).
+Production selects one draft and captures only that verifier as a CUDA Graph; reservation and
+commit remain outside capture. Widths 2-6 use the shared eager verifier and add no graph variants.
+Short, 4K, and 8K real-model checks match ordinary output exactly, accepted and rejected paths are
+both maintained, and the complete 262K MTP1 profile retains 1.206 GiB free. Numerical, latency,
+and memory evidence is in [the Phase 13 qualification](../benchmarks/gemma4-phase13-mtp-widths.md).
 
 ## Qualification and first divergence
 

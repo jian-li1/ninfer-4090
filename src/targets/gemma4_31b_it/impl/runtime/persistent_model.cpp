@@ -348,7 +348,6 @@ struct AssistantBuffers {
     Tensor feedforward;
     Tensor post;
     Tensor body_output;
-    Tensor feedback;
     Tensor logits;
 };
 
@@ -374,20 +373,25 @@ AssistantBuffers allocate_assistant_buffers(WorkspaceArena& activations) {
         .feedforward = activations.alloc(DType::BF16, {AssistantConfig::hidden}),
         .post = activations.alloc(DType::BF16, {AssistantConfig::hidden}),
         .body_output = activations.alloc(DType::BF16, {AssistantConfig::hidden}),
-        .feedback = activations.alloc(DType::BF16, {AssistantConfig::output_rows}),
         .logits = activations.alloc(DType::FP32, {AssistantConfig::vocabulary}),
     };
 }
 
-std::int32_t execute_assistant(const ModelWeights& target_weights,
-                               const AssistantWeights& assistant_weights,
-                               const HeterogeneousKVCache& cache,
-                               std::int32_t current_token, std::uint32_t position,
-                               std::uint32_t maximum_context,
-                               const Tensor& target_hidden_state,
-                               WorkspaceArena& activations,
-                               WorkspaceArena& attention_workspace,
-                               cudaStream_t stream) {
+struct AssistantStepResult {
+    std::int32_t token = -1;
+    double proposal_head_milliseconds = 0.0;
+};
+
+AssistantStepResult execute_assistant(const ModelWeights& target_weights,
+                                      const AssistantWeights& assistant_weights,
+                                      const HeterogeneousKVCache& cache,
+                                      std::int32_t current_token, std::uint32_t position,
+                                      std::uint32_t maximum_context,
+                                      const Tensor& input_hidden_state,
+                                      Tensor& output_hidden_state,
+                                      WorkspaceArena& activations,
+                                      WorkspaceArena& attention_workspace,
+                                      cudaStream_t stream) {
     if (position == 0) {
         throw std::logic_error("Gemma assistant requires a populated target cache");
     }
@@ -408,7 +412,7 @@ std::int32_t execute_assistant(const ModelWeights& target_weights,
                                stream));
     CUDA_CHECK(cudaMemcpyAsync(
         static_cast<std::byte*>(buffers.concatenated.data) + buffers.target_embedding.bytes(),
-        target_hidden_state.data, target_hidden_state.bytes(), cudaMemcpyDeviceToDevice,
+        input_hidden_state.data, input_hidden_state.bytes(), cudaMemcpyDeviceToDevice,
         stream));
     ops::linear(buffers.concatenated, assistant_weights.input_projection,
                 buffers.hidden, stream);
@@ -470,31 +474,38 @@ std::int32_t execute_assistant(const ModelWeights& target_weights,
     ops::rmsnorm(buffers.hidden, assistant_weights.final_norm,
                  TextConfig::rms_epsilon, false, buffers.body_output, stream);
     ops::linear(buffers.body_output, assistant_weights.output_projection,
-                buffers.feedback, stream);
+                output_hidden_state, stream);
+    EventPair proposal_head_timer;
+    proposal_head_timer.start(stream);
     fp8_tied_logits_raw(buffers.body_output, assistant_weights.output_head,
                         buffers.logits, stream);
-    return read_greedy_token(buffers.logits, stream);
+    const double proposal_head_milliseconds = proposal_head_timer.stop(stream);
+    return {
+        .token = read_greedy_token(buffers.logits, stream),
+        .proposal_head_milliseconds = proposal_head_milliseconds,
+    };
 }
 
 struct VerifyResult {
-    std::array<std::int32_t, 2> greedy{};
+    std::array<std::int32_t, AssistantConfig::maximum_draft_size + 1> greedy{};
+    std::uint32_t accepted_drafts = 0;
     std::uint32_t committed_tokens = 0;
-    bool accepted = false;
 };
 
-VerifyResult finalize_mtp1_verify(ModelBuffers& buffers,
-                                  HeterogeneousKVTransaction& transaction,
-                                  std::int32_t draft_token,
-                                  std::uint32_t remaining_outputs,
-                                  const Tensor& target_hidden_state,
-                                  cudaStream_t stream) {
+VerifyResult finalize_mtp_verify(ModelBuffers& buffers,
+                                 HeterogeneousKVTransaction& transaction,
+                                 std::span<const std::int32_t> draft_tokens,
+                                 std::uint32_t remaining_outputs,
+                                 const Tensor& target_hidden_state,
+                                 cudaStream_t stream) {
     const std::vector<std::int32_t> greedy = read_greedy_tokens(buffers.logits, stream);
-    VerifyResult result{
-        .greedy = {greedy[0], greedy[1]},
-        .committed_tokens = 1,
-        .accepted = draft_token == greedy[0],
-    };
-    if (result.accepted && remaining_outputs >= 2) { result.committed_tokens = 2; }
+    VerifyResult result;
+    std::copy(greedy.begin(), greedy.end(), result.greedy.begin());
+    while (result.accepted_drafts < draft_tokens.size() &&
+           draft_tokens[result.accepted_drafts] == greedy[result.accepted_drafts]) {
+        ++result.accepted_drafts;
+    }
+    result.committed_tokens = std::min(result.accepted_drafts + 1U, remaining_outputs);
     const Tensor selected_hidden = buffers.final_hidden
                                        .slice(1, result.committed_tokens - 1, 1)
                                        .view({TextConfig::hidden});
@@ -504,25 +515,31 @@ VerifyResult finalize_mtp1_verify(ModelBuffers& buffers,
     return result;
 }
 
-VerifyResult execute_mtp1_verify(const ModelWeights& weights,
-                                 HeterogeneousKVCache& cache, std::uint32_t first,
-                                 std::int32_t current_token, std::int32_t draft_token,
-                                 std::uint32_t maximum_context,
-                                 std::uint32_t remaining_outputs,
-                                 const Tensor& target_hidden_state,
-                                 WorkspaceArena& activations,
-                                 WorkspaceArena& attention_workspace,
-                                 cudaStream_t stream) {
+VerifyResult execute_mtp_verify(const ModelWeights& weights,
+                                HeterogeneousKVCache& cache, std::uint32_t first,
+                                std::int32_t current_token,
+                                std::span<const std::int32_t> draft_tokens,
+                                std::uint32_t maximum_context,
+                                std::uint32_t remaining_outputs,
+                                const Tensor& target_hidden_state,
+                                WorkspaceArena& activations,
+                                WorkspaceArena& attention_workspace,
+                                cudaStream_t stream) {
     auto activation_scope = activations.scope();
-    ModelBuffers buffers = allocate_model_buffers(activations, 2, true);
-    const std::array<std::int32_t, 2> tokens{current_token, draft_token};
+    const std::int32_t token_count = static_cast<std::int32_t>(draft_tokens.size() + 1);
+    ModelBuffers buffers = allocate_model_buffers(activations, token_count, true);
+    std::vector<std::int32_t> tokens;
+    tokens.reserve(static_cast<std::size_t>(token_count));
+    tokens.push_back(current_token);
+    tokens.insert(tokens.end(), draft_tokens.begin(), draft_tokens.end());
     upload_decode_parameters(buffers, first, tokens, stream);
-    auto transaction = cache.begin_transaction(0, first, 2, stream);
+    auto transaction = cache.begin_transaction(
+        0, first, static_cast<std::uint32_t>(token_count), stream);
     const ops::CausalAttentionExecutionEnvelope envelope{1, maximum_context};
     enqueue_model(weights, transaction, buffers, envelope, attention_workspace, stream,
                   true, true);
-    return finalize_mtp1_verify(buffers, transaction, draft_token, remaining_outputs,
-                                target_hidden_state, stream);
+    return finalize_mtp_verify(buffers, transaction, draft_tokens, remaining_outputs,
+                               target_hidden_state, stream);
 }
 
 class PersistentDecodeGraph {
@@ -592,23 +609,30 @@ private:
     std::uint32_t replay_count_ = 0;
 };
 
-class PersistentMtp1VerifyGraph {
+class PersistentMtpVerifyGraph {
 public:
     void capture(const ModelWeights& weights, HeterogeneousKVCache& cache,
-                 std::uint32_t maximum_context, WorkspaceArena& activations,
+                 std::uint32_t maximum_context, std::uint32_t draft_width,
+                 WorkspaceArena& activations,
                  WorkspaceArena& attention_workspace, cudaStream_t stream) {
         if (executable_.ready()) {
-            throw std::logic_error("Gemma MTP1 verify graph cannot be recaptured");
+            throw std::logic_error("Gemma MTP verify graph cannot be recaptured");
         }
+        if (draft_width == 0 || draft_width > AssistantConfig::maximum_draft_size) {
+            throw std::invalid_argument("Gemma MTP verify graph width must be in [1,6]");
+        }
+        draft_width_ = draft_width;
         CUDA_CHECK(cudaStreamSynchronize(stream));
         const std::size_t free_before = free_device_bytes();
         {
             auto activation_scope = activations.scope();
-            ModelBuffers buffers = allocate_model_buffers(activations, 2, true);
-            const std::array<std::int32_t, 2> tokens{0, 0};
+            const std::int32_t token_count = static_cast<std::int32_t>(draft_width + 1);
+            ModelBuffers buffers = allocate_model_buffers(activations, token_count, true);
+            const std::vector<std::int32_t> tokens(static_cast<std::size_t>(token_count), 0);
             const std::uint32_t first = cache.frontier(0);
             upload_decode_parameters(buffers, first, tokens, stream);
-            auto transaction = cache.begin_transaction(0, first, 2, stream);
+            auto transaction = cache.begin_transaction(
+                0, first, static_cast<std::uint32_t>(token_count), stream);
             definition_.capture(stream, [&] {
                 enqueue_model(weights, transaction, buffers, {1, maximum_context},
                               attention_workspace, stream, true, true);
@@ -624,24 +648,34 @@ public:
     }
 
     VerifyResult replay(HeterogeneousKVCache& cache, std::uint32_t first,
-                        std::int32_t current_token, std::int32_t draft_token,
+                        std::int32_t current_token,
+                        std::span<const std::int32_t> draft_tokens,
                         std::uint32_t remaining_outputs,
                         const Tensor& target_hidden_state,
                         WorkspaceArena& activations, cudaStream_t stream) {
         if (!executable_.ready()) {
-            throw std::logic_error("Gemma MTP1 verify graph was not captured");
+            throw std::logic_error("Gemma MTP verify graph was not captured");
+        }
+        if (draft_tokens.size() != draft_width_) {
+            throw std::invalid_argument("Gemma MTP verify graph replay width changed");
         }
         auto activation_scope = activations.scope();
-        ModelBuffers buffers = allocate_model_buffers(activations, 2, true);
-        const std::array<std::int32_t, 2> tokens{current_token, draft_token};
+        const std::int32_t token_count = static_cast<std::int32_t>(draft_width_ + 1);
+        ModelBuffers buffers = allocate_model_buffers(activations, token_count, true);
+        std::vector<std::int32_t> tokens;
+        tokens.reserve(static_cast<std::size_t>(token_count));
+        tokens.push_back(current_token);
+        tokens.insert(tokens.end(), draft_tokens.begin(), draft_tokens.end());
         upload_decode_parameters(buffers, first, tokens, stream);
-        auto transaction = cache.begin_transaction(0, first, 2, stream);
+        auto transaction = cache.begin_transaction(
+            0, first, static_cast<std::uint32_t>(token_count), stream);
         executable_.launch(stream);
         ++replay_count_;
-        return finalize_mtp1_verify(buffers, transaction, draft_token,
-                                    remaining_outputs, target_hidden_state, stream);
+        return finalize_mtp_verify(buffers, transaction, draft_tokens,
+                                   remaining_outputs, target_hidden_state, stream);
     }
 
+    [[nodiscard]] bool ready() const noexcept { return executable_.ready(); }
     [[nodiscard]] std::size_t device_bytes() const noexcept { return device_bytes_; }
     [[nodiscard]] std::uint32_t capture_count() const noexcept { return capture_count_; }
     [[nodiscard]] std::uint32_t replay_count() const noexcept { return replay_count_; }
@@ -649,10 +683,19 @@ public:
 private:
     DecodeGraphDefinition definition_;
     DecodeGraphExecutable executable_;
+    std::uint32_t draft_width_ = 0;
     std::size_t device_bytes_ = 0;
     std::uint32_t capture_count_ = 0;
     std::uint32_t replay_count_ = 0;
 };
+
+double nearest_rank_percentile(std::vector<double> values, std::uint32_t percentile) {
+    if (values.empty() || percentile == 0 || percentile > 100) { return 0.0; }
+    std::sort(values.begin(), values.end());
+    const std::size_t rank =
+        (static_cast<std::size_t>(percentile) * values.size() + 99U) / 100U;
+    return values[std::max<std::size_t>(rank, 1U) - 1U];
+}
 
 } // namespace
 
@@ -664,6 +707,7 @@ PersistentRunResult run_persistent_target(const std::filesystem::path& artifact_
     const std::uint32_t appended_tokens = options.generation_tokens > 0
                                               ? options.generation_tokens - 1
                                               : static_cast<std::uint32_t>(options.run_deep_decode);
+    const bool use_mtp = options.mtp_draft_tokens != 0;
     if (options.maximum_context < TextConfig::sliding_window ||
         options.maximum_context > TextConfig::maximum_position ||
         prefill_tokens == 0 || options.chunk_tokens == 0 || options.chunk_tokens > 64 ||
@@ -671,7 +715,8 @@ PersistentRunResult run_persistent_target(const std::filesystem::path& artifact_
         (options.generation_tokens > 0 && options.run_deep_decode) ||
         (options.qualify_graph_transactions &&
          (!options.use_cuda_graph || appended_tokens == 0)) ||
-        (options.use_mtp1 &&
+        options.mtp_draft_tokens > AssistantConfig::maximum_draft_size ||
+        (use_mtp &&
          (options.generation_tokens < 2 || options.qualify_graph_transactions)) ||
         options.input_token < 0 ||
         options.input_token >= static_cast<std::int32_t>(TextConfig::vocabulary)) {
@@ -686,18 +731,18 @@ PersistentRunResult run_persistent_target(const std::filesystem::path& artifact_
     DeviceContext device(options.device_id);
     artifact::Reader reader(artifact_path);
     std::size_t target_weights_bytes = 0;
-    if (options.use_mtp1) {
+    if (use_mtp) {
         artifact::Binder target_binder(reader);
         target_weights_bytes =
             bind_artifact(target_binder, false).materialization.device_capacity_bytes;
     }
     artifact::Binder binder(reader);
-    ArtifactLoadPlan plan = bind_artifact(binder, options.use_mtp1);
+    ArtifactLoadPlan plan = bind_artifact(binder, use_mtp);
     artifact::MaterializedArtifact materialized =
         artifact::materialize(reader, plan.materialization, device);
     const ModelWeights weights = load_weights(materialized, plan.bindings);
     const std::optional<AssistantWeights> assistant_weights =
-        options.use_mtp1
+        use_mtp
             ? std::optional<AssistantWeights>(load_assistant_weights(
                   materialized, plan.bindings.assistant.value()))
             : std::nullopt;
@@ -706,15 +751,17 @@ PersistentRunResult run_persistent_target(const std::filesystem::path& artifact_
     }
 
     PersistentRunResult result;
-    result.weights_bytes = options.use_mtp1 ? target_weights_bytes
+    result.weights_bytes = use_mtp ? target_weights_bytes
                                             : materialized.stats().device_capacity_bytes;
     result.assistant_weights_bytes =
         materialized.stats().device_capacity_bytes - result.weights_bytes;
     result.free_after_weights = free_device_bytes();
     result.free_after_assistant = result.free_after_weights;
+    result.mtp_draft_width = options.mtp_draft_tokens;
+    result.mtp_accepted_per_position.assign(options.mtp_draft_tokens, 0);
 
     const std::uint32_t maximum_transaction_tokens =
-        std::max(options.chunk_tokens, options.use_mtp1 ? 2U : 1U);
+        std::max(options.chunk_tokens, use_mtp ? options.mtp_draft_tokens + 1U : 1U);
 
     const auto specs = make_text_kv_group_specs({
         .maximum_context = options.maximum_context,
@@ -748,13 +795,21 @@ PersistentRunResult run_persistent_target(const std::filesystem::path& artifact_
     result.free_after_workspace = free_device_bytes();
     result.free_after_graph = result.free_after_workspace;
     std::optional<DeviceBuffer> target_hidden_backing;
+    std::optional<DeviceBuffer> assistant_feedback_backing;
     Tensor target_hidden_state;
-    if (options.use_mtp1) {
+    Tensor assistant_feedback_state;
+    if (use_mtp) {
         target_hidden_backing.emplace(
+            static_cast<std::size_t>(TextConfig::hidden) * dtype_size(DType::BF16));
+        assistant_feedback_backing.emplace(
             static_cast<std::size_t>(TextConfig::hidden) * dtype_size(DType::BF16));
         target_hidden_state = Tensor(target_hidden_backing->p, DType::BF16,
                                      {static_cast<std::int32_t>(TextConfig::hidden)});
-        result.mtp_workspace_bytes = target_hidden_backing->bytes;
+        assistant_feedback_state = Tensor(
+            assistant_feedback_backing->p, DType::BF16,
+            {static_cast<std::int32_t>(TextConfig::hidden)});
+        result.mtp_workspace_bytes =
+            target_hidden_backing->bytes + assistant_feedback_backing->bytes;
     }
 
     EventPair timer;
@@ -785,13 +840,17 @@ PersistentRunResult run_persistent_target(const std::filesystem::path& artifact_
     result.prefill_milliseconds = timer.stop(device.stream);
 
     PersistentDecodeGraph decode_graph;
-    PersistentMtp1VerifyGraph mtp1_verify_graph;
+    PersistentMtpVerifyGraph mtp_verify_graph;
     if (options.use_cuda_graph && appended_tokens > 0) {
-        if (options.use_mtp1) {
-            mtp1_verify_graph.capture(weights, cache, options.maximum_context,
-                                      activations, attention_workspace, device.stream);
-            result.graph_device_bytes = mtp1_verify_graph.device_bytes();
-            result.graph_capture_count = mtp1_verify_graph.capture_count();
+        if (use_mtp &&
+            options.mtp_draft_tokens == AssistantConfig::production_draft_size) {
+            if (first + options.mtp_draft_tokens + 1U <= options.maximum_context) {
+                mtp_verify_graph.capture(weights, cache, options.maximum_context,
+                                         options.mtp_draft_tokens, activations,
+                                         attention_workspace, device.stream);
+                result.graph_device_bytes = mtp_verify_graph.device_bytes();
+                result.graph_capture_count = mtp_verify_graph.capture_count();
+            }
         } else {
             decode_graph.capture(weights, cache, options.maximum_context, activations,
                                  attention_workspace, device.stream);
@@ -823,52 +882,74 @@ PersistentRunResult run_persistent_target(const std::filesystem::path& artifact_
                              device.stream, true);
     };
 
-    if (options.use_mtp1) {
+    if (use_mtp) {
         result.generated_tokens.push_back(result.greedy_token);
         EventPair assistant_timer;
         EventPair verify_timer;
+        std::vector<double> round_milliseconds;
         timer.start(device.stream);
         while (result.generated_tokens.size() < options.generation_tokens) {
             const std::int32_t current_token = result.generated_tokens.back();
-            assistant_timer.start(device.stream);
-            const std::int32_t draft_token = execute_assistant(
-                weights, *assistant_weights, cache, current_token, first,
-                options.maximum_context, target_hidden_state, activations,
-                attention_workspace, device.stream);
-            result.assistant_milliseconds += assistant_timer.stop(device.stream);
-            if (result.mtp_proposed_tokens == 0) {
-                result.mtp_first_draft_token = draft_token;
-            }
-            ++result.mtp_proposed_tokens;
-
             const std::uint32_t remaining = options.generation_tokens -
                                             static_cast<std::uint32_t>(
                                                 result.generated_tokens.size());
+            const std::uint32_t draft_count =
+                std::min(options.mtp_draft_tokens, remaining);
+            std::vector<std::int32_t> draft_tokens;
+            draft_tokens.reserve(draft_count);
+            const Tensor* input_hidden = &target_hidden_state;
+            const double assistant_before = result.assistant_milliseconds;
+            const double verify_before = result.verify_milliseconds;
+            for (std::uint32_t draft = 0; draft < draft_count; ++draft) {
+                const std::int32_t input_token =
+                    draft == 0 ? current_token : draft_tokens.back();
+                assistant_timer.start(device.stream);
+                const AssistantStepResult step = execute_assistant(
+                    weights, *assistant_weights, cache, input_token, first,
+                    options.maximum_context, *input_hidden, assistant_feedback_state,
+                    activations, attention_workspace, device.stream);
+                result.assistant_milliseconds += assistant_timer.stop(device.stream);
+                result.proposal_head_milliseconds += step.proposal_head_milliseconds;
+                draft_tokens.push_back(step.token);
+                input_hidden = &assistant_feedback_state;
+            }
+            if (result.mtp_rounds == 0) {
+                result.mtp_first_round_drafts = draft_tokens;
+                result.mtp_first_draft_token = draft_tokens.front();
+            }
+            result.mtp_proposed_tokens += draft_count;
+
             verify_timer.start(device.stream);
-            const VerifyResult verified = options.use_cuda_graph
-                                              ? mtp1_verify_graph.replay(
-                                                    cache, first, current_token, draft_token,
-                                                    remaining, target_hidden_state, activations,
-                                                    device.stream)
-                                              : execute_mtp1_verify(
-                                                    weights, cache, first, current_token,
-                                                    draft_token, options.maximum_context,
-                                                    remaining, target_hidden_state, activations,
-                                                    attention_workspace, device.stream);
+            const VerifyResult verified =
+                mtp_verify_graph.ready() && draft_count == options.mtp_draft_tokens
+                    ? mtp_verify_graph.replay(
+                          cache, first, current_token, draft_tokens, remaining,
+                          target_hidden_state, activations, device.stream)
+                    : execute_mtp_verify(
+                          weights, cache, first, current_token, draft_tokens,
+                          options.maximum_context, remaining, target_hidden_state,
+                          activations, attention_workspace, device.stream);
             result.verify_milliseconds += verify_timer.stop(device.stream);
-            if (verified.accepted) {
-                ++result.mtp_accepted_tokens;
-                result.generated_tokens.push_back(draft_token);
-                if (remaining >= 2) {
-                    result.generated_tokens.push_back(verified.greedy[1]);
-                }
-            } else {
-                result.generated_tokens.push_back(verified.greedy[0]);
+            const std::uint32_t accepted_outputs =
+                std::min(verified.accepted_drafts, remaining);
+            result.mtp_accepted_tokens += accepted_outputs;
+            for (std::uint32_t accepted = 0; accepted < accepted_outputs; ++accepted) {
+                ++result.mtp_accepted_per_position[accepted];
+                result.generated_tokens.push_back(draft_tokens[accepted]);
+            }
+            if (accepted_outputs < remaining) {
+                result.generated_tokens.push_back(verified.greedy[accepted_outputs]);
             }
             first += verified.committed_tokens;
             result.greedy_token = result.generated_tokens.back();
+            ++result.mtp_rounds;
+            round_milliseconds.push_back(
+                (result.assistant_milliseconds - assistant_before) +
+                (result.verify_milliseconds - verify_before));
         }
         result.decode_milliseconds = timer.stop(device.stream);
+        result.mtp_round_p50_milliseconds = nearest_rank_percentile(round_milliseconds, 50);
+        result.mtp_round_p95_milliseconds = nearest_rank_percentile(round_milliseconds, 95);
     } else if (options.generation_tokens > 0) {
         result.generated_tokens.push_back(result.greedy_token);
         timer.start(device.stream);
@@ -898,8 +979,8 @@ PersistentRunResult run_persistent_target(const std::filesystem::path& artifact_
             result.graph_transaction_checks_passed = true;
         }
     }
-    result.graph_capture_count = decode_graph.capture_count() + mtp1_verify_graph.capture_count();
-    result.graph_replay_count = decode_graph.replay_count() + mtp1_verify_graph.replay_count();
+    result.graph_capture_count = decode_graph.capture_count() + mtp_verify_graph.capture_count();
+    result.graph_replay_count = decode_graph.replay_count() + mtp_verify_graph.replay_count();
     result.final_frontier = cache.frontier(0);
     return result;
 }

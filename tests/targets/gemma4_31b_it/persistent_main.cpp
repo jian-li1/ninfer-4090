@@ -1,6 +1,7 @@
 #include "targets/gemma4_31b_it/impl/runtime/persistent_model.h"
 #include "targets/gemma4_31b_it/impl/runtime/reference_model.h"
 
+#include <algorithm>
 #include <cstdlib>
 #include <exception>
 #include <iostream>
@@ -90,26 +91,53 @@ int main() {
         options.chunk_tokens = static_cast<std::uint32_t>(varied_ids.size());
         options.generation_tokens = 64;
         options.use_cuda_graph = false;
-        options.use_mtp1 = false;
+        options.mtp_draft_tokens = 0;
         const auto ordinary_mtp_reference = run_persistent_target(artifact, options);
-        options.use_mtp1 = true;
-        const auto mtp1 = run_persistent_target(artifact, options);
+        std::vector<std::int32_t> expected_first_round;
+        PersistentRunResult mtp1;
+        for (std::uint32_t width = 1; width <= 6; ++width) {
+            options.mtp_draft_tokens = width;
+            const auto mtp = run_persistent_target(artifact, options);
+            if (mtp.generated_tokens != ordinary_mtp_reference.generated_tokens ||
+                mtp.final_frontier != ordinary_mtp_reference.final_frontier ||
+                mtp.assistant_weights_bytes == 0 || mtp.mtp_workspace_bytes == 0 ||
+                mtp.kv_payload_bytes != ordinary_mtp_reference.kv_payload_bytes ||
+                mtp.kv_metadata_bytes != ordinary_mtp_reference.kv_metadata_bytes ||
+                mtp.mtp_draft_width != width || mtp.mtp_rounds == 0 ||
+                mtp.mtp_proposed_tokens < mtp.mtp_rounds ||
+                mtp.mtp_proposed_tokens <= mtp.mtp_accepted_tokens ||
+                mtp.mtp_first_round_drafts.size() != width ||
+                mtp.mtp_accepted_per_position.size() != width ||
+                !(mtp.proposal_head_milliseconds > 0.0)) {
+                std::cerr << "Gemma MTP" << width
+                          << " changed greedy output or omitted assistant execution"
+                          << " draft=" << mtp.mtp_first_draft_token
+                          << " rounds=" << mtp.mtp_rounds
+                          << " proposed=" << mtp.mtp_proposed_tokens
+                          << " accepted=" << mtp.mtp_accepted_tokens << '\n';
+                return 1;
+            }
+            if (!expected_first_round.empty() &&
+                !std::equal(expected_first_round.begin(), expected_first_round.end(),
+                            mtp.mtp_first_round_drafts.begin())) {
+                std::cerr << "Gemma assistant feedback changed an earlier draft at width "
+                          << width << '\n';
+                return 1;
+            }
+            expected_first_round = mtp.mtp_first_round_drafts;
+            if (width == 1) { mtp1 = mtp; }
+        }
+        options.mtp_draft_tokens = 1;
         options.use_cuda_graph = true;
         const auto mtp1_graph = run_persistent_target(artifact, options);
         // Pinned BF16 assistant oracle for the six-token checkpoint prompt at position 6.
         constexpr std::int32_t expected_first_draft = 236743;
-        if (mtp1.generated_tokens != ordinary_mtp_reference.generated_tokens ||
-            mtp1_graph.generated_tokens != ordinary_mtp_reference.generated_tokens ||
-            mtp1.final_frontier != ordinary_mtp_reference.final_frontier ||
+        if (mtp1_graph.generated_tokens != ordinary_mtp_reference.generated_tokens ||
             mtp1_graph.final_frontier != ordinary_mtp_reference.final_frontier ||
-            mtp1.assistant_weights_bytes == 0 || mtp1.mtp_workspace_bytes == 0 ||
-            mtp1.kv_payload_bytes != ordinary_mtp_reference.kv_payload_bytes ||
-            mtp1.kv_metadata_bytes != ordinary_mtp_reference.kv_metadata_bytes ||
             mtp1.mtp_accepted_tokens == 0 ||
-            mtp1.mtp_proposed_tokens <= mtp1.mtp_accepted_tokens ||
             mtp1.mtp_first_draft_token != expected_first_draft ||
             mtp1_graph.graph_capture_count != 1 ||
-            mtp1_graph.graph_replay_count != mtp1_graph.mtp_proposed_tokens) {
+            mtp1_graph.graph_replay_count != mtp1_graph.mtp_rounds) {
             std::cerr << "Gemma MTP1 changed greedy output or omitted assistant execution"
                       << " draft=" << mtp1.mtp_first_draft_token
                       << " proposed=" << mtp1.mtp_proposed_tokens

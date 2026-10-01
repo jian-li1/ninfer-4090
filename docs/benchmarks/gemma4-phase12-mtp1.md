@@ -55,10 +55,10 @@ NINFER_GEMMA4_ARTIFACT=/dev/shm/gemma4_31b_it.ninfer \
 
 All focused checks passed.
 
-## Whole-model result
+## Superseded whole-model result
 
-The 4K semantic corpus used in Phase 11 generated 64 tokens. All modes produced the exact same 64
-token IDs.
+The original Phase 12 measurement below predated the stronger later-column exactness gate added in
+Phase 13. It is retained as the phase record but is not a current performance claim.
 
 | Route | Decode (ms) | MTP proposals | Accepted | Change vs eager target |
 |---|---:|---:|---:|---:|
@@ -67,15 +67,17 @@ token IDs.
 | MTP1 eager | 1,745.434 | 49 | 15 | 4.52% faster |
 | MTP1 graph | 1,717.122 | 49 | 15 | 6.07% faster |
 
-The graphed MTP1 route spent 70.334 ms in proposal and 1,646.362 ms in target verification. It was
-1.62% faster than eager MTP1 and 4.02% faster than the Phase 11 target graph. This is the positive
-corpus speedup required for MTP1 admission; it is not a claim about every prompt.
+Phase 13 found that the original batched sliding-attention verifier did not preserve ordinary T=1
+arithmetic for later columns. With exact per-column arithmetic, the same 4K run takes 1,874.372 ms,
+4.77% slower than the 1,789.035 ms target graph. Width 1 nevertheless wins the new code, prose,
+and mixed sweep by 14.71-20.75%; see
+[the Phase 13 qualification](gemma4-phase13-mtp-widths.md).
 
 ## 262K residency
 
 With maximum context 262,144, MTP1, and its graph enabled, the process materialized
 16,971,062,784 target-weight bytes, 482,629,120 assistant-weight bytes, 5,971,640,320 cache bytes,
-32,920 cache-metadata bytes, 37,765,120 bounded workspace bytes, 10,752 MTP workspace bytes, and
+32,920 cache-metadata bytes, 37,765,120 bounded workspace bytes, 21,504 MTP workspace bytes, and
 an 8 MiB graph allocation. It retained 1,294,663,680 bytes free after graph creation and completed
 a proposal/rejection round. MTP therefore fits together with the selected full RK4V4-E8 cache and
 does not require the deferred Phase 10 latent-cache variant.

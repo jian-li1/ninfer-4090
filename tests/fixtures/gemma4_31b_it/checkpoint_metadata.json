@@ -185,6 +185,41 @@
         1024
       ]
     },
+    "assistant_runtime_draft_tokens": {
+      "dtype": "int64",
+      "sha256": "0357a12990fab5d61b2c64495fe85b8e927184d6d2a6e8319270f073e5a8e791",
+      "shape": [
+        1,
+        6
+      ]
+    },
+    "assistant_runtime_feedback": {
+      "dtype": "float32",
+      "sha256": "ff4f57e37f9d8b041869b631872285c9d65612dd975234188e75b41007993c36",
+      "shape": [
+        1,
+        6,
+        5376
+      ]
+    },
+    "assistant_runtime_top32_ids": {
+      "dtype": "int64",
+      "sha256": "284ba247ae6edbc49a95fef3cccc281504e458d4ff1663452d0c03f4c2549b91",
+      "shape": [
+        1,
+        6,
+        32
+      ]
+    },
+    "assistant_runtime_top32_logits": {
+      "dtype": "float32",
+      "sha256": "63c3ffa5a65a4ee4f0c7925db2bc48d2ae51945f3f54275682d7c19959fedcc3",
+      "shape": [
+        1,
+        6,
+        32
+      ]
+    },
     "assistant_target_embedding": {
       "dtype": "float32",
       "sha256": "3fc18288b0b54d1bef6869026fb8ca8ad3e1a9fecb8d73c7a0b8ac97bb67bb7c",
@@ -641,7 +676,7 @@
   },
   "prompt": "Hello, Gemma 4!",
   "schema": "ninfer.gemma4.checkpoint-fixtures.v1",
-  "scope": "text-only target full forward and official assistant MTP1",
+  "scope": "text-only target full forward and official assistant MTP1-6",
   "target": {
     "checkpoint_sha256": "1b9b1d622a93f02c0d33f98e502f233b5d707443af6ddc464ed0bf5498506c20",
     "repository": "google/gemma-4-31B-it-qat-w4a16-ct",

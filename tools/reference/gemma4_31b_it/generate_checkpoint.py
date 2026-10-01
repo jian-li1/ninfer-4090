@@ -270,6 +270,7 @@ def run_assistant(
     checkpoint: Path,
     target_result: dict[str, torch.Tensor],
     shared: dict[str, tuple[torch.Tensor, torch.Tensor]],
+    position_id: int | None = None,
 ) -> dict[str, torch.Tensor]:
     weights = DenseWeights(checkpoint)
     last_token_id = target_result["target_token_ids"][:, -1:]
@@ -277,7 +278,9 @@ def run_assistant(
     target_hidden = target_result["target_final_hidden"][:, -1, :]
     concatenated = torch.cat((target_embedding, target_hidden), dim=-1)
     hidden = weights.linear("pre_projection.weight", concatenated)[:, None, :]
-    position = torch.tensor([[len(TOKEN_IDS) - 1]], dtype=torch.int64)
+    position = torch.tensor(
+        [[len(TOKEN_IDS) - 1 if position_id is None else position_id]], dtype=torch.int64
+    )
     result = {
         "assistant_last_token_id": last_token_id,
         "assistant_position_id": position,
@@ -344,6 +347,50 @@ def run_assistant(
     return result
 
 
+def run_assistant_draft_loop(
+    assistant_checkpoint: Path,
+    target_checkpoint: Path,
+    target_result: dict[str, torch.Tensor],
+    shared: dict[str, tuple[torch.Tensor, torch.Tensor]],
+    draft_count: int = 6,
+) -> dict[str, torch.Tensor]:
+    """Run the official fixed-position feedback loop after the target's first greedy token."""
+    target_weights = DenseWeights(target_checkpoint)
+    embedding_weight = target_weights.tensor("model.language_model.embed_tokens.weight")
+    embedding_scale = target_result["target_embedding_scale"]
+    last_token = target_result["target_greedy_next_token"]
+    last_hidden = target_result["target_final_hidden"][:, -1:, :]
+    draft_tokens = []
+    feedback_states = []
+    top32_ids = []
+    top32_logits = []
+    for _ in range(draft_count):
+        target_embedding = embedding_weight[last_token] * embedding_scale
+        step_target = {
+            "target_token_ids": last_token,
+            "target_embeddings": target_embedding,
+            "target_final_hidden": last_hidden,
+        }
+        step = run_assistant(
+            assistant_checkpoint,
+            step_target,
+            shared,
+            position_id=len(TOKEN_IDS),
+        )
+        last_token = step["assistant_draft_token"].reshape(1, 1)
+        last_hidden = step["assistant_feedback"]
+        draft_tokens.append(last_token)
+        feedback_states.append(last_hidden)
+        top32_ids.append(step["assistant_top32_ids"])
+        top32_logits.append(step["assistant_top32_logits"])
+    return {
+        "assistant_runtime_draft_tokens": torch.cat(draft_tokens, dim=1),
+        "assistant_runtime_feedback": torch.cat(feedback_states, dim=1),
+        "assistant_runtime_top32_ids": torch.cat(top32_ids, dim=1),
+        "assistant_runtime_top32_logits": torch.cat(top32_logits, dim=1),
+    }
+
+
 def generate(source_dir: Path, output_dir: Path, row_chunk: int) -> None:
     verify_resources(source_dir)
     target_path = source_dir / "target" / "model.safetensors"
@@ -360,7 +407,10 @@ def generate(source_dir: Path, output_dir: Path, row_chunk: int) -> None:
     with torch.inference_mode():
         target_result, shared = run_target(target_path, row_chunk)
         assistant_result = run_assistant(assistant_path, target_result, shared)
-    tensors = {**target_result, **assistant_result}
+        assistant_drafts = run_assistant_draft_loop(
+            assistant_path, target_path, target_result, shared
+        )
+    tensors = {**target_result, **assistant_result, **assistant_drafts}
     arrays = {
         name: value.detach().cpu().to(torch.float32).numpy()
         if value.dtype == torch.bfloat16
@@ -371,7 +421,7 @@ def generate(source_dir: Path, output_dir: Path, row_chunk: int) -> None:
     np.savez(output_dir / "checkpoint.npz", **arrays)
     metadata = {
         "schema": "ninfer.gemma4.checkpoint-fixtures.v1",
-        "scope": "text-only target full forward and official assistant MTP1",
+        "scope": "text-only target full forward and official assistant MTP1-6",
         "prompt": PROMPT,
         "token_ids": TOKEN_IDS,
         "target": {

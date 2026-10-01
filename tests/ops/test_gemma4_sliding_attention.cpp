@@ -277,6 +277,60 @@ int run_sequence(int tokens) {
     return failures;
 }
 
+std::vector<double> execute_verifier_segment(Fixture& fixture, int first, int tokens,
+                                             bool one_token_at_a_time) {
+    const std::vector<float> q = make_values(kQHeads, first, tokens, 0.1F);
+    const std::vector<float> k = make_values(kKVHeads, first, tokens, 0.7F);
+    const std::vector<float> v = make_values(kKVHeads, first, tokens, 1.3F);
+    std::vector<std::int32_t> positions(static_cast<std::size_t>(tokens));
+    for (int token = 0; token < tokens; ++token) positions[token] = first + token;
+
+    DeviceBuffer d_q = to_device_bf16(q);
+    DeviceBuffer d_k = to_device_bf16(k);
+    DeviceBuffer d_v = to_device_bf16(v);
+    DeviceBuffer d_positions = to_device(positions);
+    DeviceBuffer d_out(static_cast<std::size_t>(kD) * kQHeads * tokens * 2);
+    Tensor tq(d_q.p, DType::BF16, {kD, kQHeads, tokens});
+    Tensor tk(d_k.p, DType::BF16, {kD, kKVHeads, tokens});
+    Tensor tv(d_v.p, DType::BF16, {kD, kKVHeads, tokens});
+    Tensor tp(d_positions.p, DType::I32, {tokens});
+    Tensor out(d_out.p, DType::BF16, {kD, kQHeads, tokens});
+    if (one_token_at_a_time) {
+        for (int token = 0; token < tokens; ++token) {
+            const Tensor q_token = tq.slice(2, token, 1);
+            const Tensor k_token = tk.slice(2, token, 1);
+            const Tensor v_token = tv.slice(2, token, 1);
+            const Tensor position = tp.slice(0, token, 1);
+            Tensor out_token = out.slice(2, token, 1);
+            ops::causal_sliding_softmax_attention(q_token, k_token, v_token, position,
+                                                  kGeometry, kWindow, kScale, fixture.cache,
+                                                  out_token, nullptr);
+        }
+    } else {
+        ops::causal_sliding_softmax_attention(tq, tk, tv, tp, kGeometry, kWindow, kScale,
+                                              fixture.cache, out, nullptr);
+    }
+    cuda_synchronize();
+    return from_device_bf16(d_out.p, static_cast<std::size_t>(kD) * kQHeads * tokens);
+}
+
+int run_verifier_exact_equivalence() {
+    Fixture batched;
+    Fixture sequential;
+    int failures = 0;
+    for (int begin = 0; begin < 128; begin += kPage) {
+        failures += run_segment(batched, begin, kPage, false);
+        failures += run_segment(sequential, begin, kPage, false);
+    }
+    const auto batched_output = execute_verifier_segment(batched, 128, 7, false);
+    const auto sequential_output = execute_verifier_segment(sequential, 128, 7, true);
+    if (batched_output != sequential_output) {
+        std::cerr << "gemma4 sliding T=2..7 changed ordinary T=1 arithmetic\n";
+        ++failures;
+    }
+    return failures;
+}
+
 } // namespace
 
 int main() {
@@ -288,6 +342,7 @@ int main() {
     for (int tokens : {1, 2, 127, 128, 1023, 1024, 1025, 2048}) {
         failures += run_sequence(tokens);
     }
+    failures += run_verifier_exact_equivalence();
     std::cout << (failures ? "FAIL" : "OK") << " gemma4_sliding_attention\n";
     return failures ? 1 : 0;
 }

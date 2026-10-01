@@ -3,8 +3,8 @@
 This tool is the executable mathematical authority for the text-only Gemma 4 target. The fast
 fixture set is independent of NInfer and exercises BF16 embedding scaling, scaled and scale-less
 RMSNorm, local and proportional partial RoPE, local and full Q/K/V transforms, unit-scaled grouped
-query attention, GELU-tanh MLP, both decoder-layer kinds, final logit soft-capping, and the MTP1
-concatenation/projection contract.
+query attention, GELU-tanh MLP, both decoder-layer kinds, final logit soft-capping, and the MTP1-6
+fixed-position feedback contract.
 
 Create an isolated Python 3.11 environment and install the exact dependencies:
 
@@ -40,4 +40,5 @@ Place the two verified `model.safetensors` files beside the small resources and 
 The checkpoint generator verifies both complete SHA-256 hashes, independently decodes the signed
 INT4/group-32 target weights from their stored scales, and streams one output-row block at a time.
 It emits an actual 60-layer short-prompt forward, selected local/full layer substages, final logits,
-the target layer-58/layer-59 shared K/V views, and one official assistant proposal. It is an oracle
+the target layer-58/layer-59 shared K/V views, and six official fixed-position assistant proposals.
+It is the independent BF16 oracle for the corresponding production target and assistant routes.

@@ -74,7 +74,8 @@ struct AssistantConfig {
     static constexpr std::uint32_t shared_kv_layers            = 4;
     static constexpr std::uint32_t centroids                   = 2048;
     static constexpr std::uint32_t centroid_intermediate_top_k = 32;
-    static constexpr std::uint32_t default_draft_size          = 6;
+    static constexpr std::uint32_t production_draft_size       = 1;
+    static constexpr std::uint32_t maximum_draft_size          = 6;
     static constexpr bool tied_embeddings                      = true;
     static constexpr bool owns_key_value_projections           = false;
 

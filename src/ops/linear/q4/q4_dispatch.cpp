@@ -18,7 +18,7 @@ Q4Launch select_q4_a16_launch(std::int32_t n, std::int32_t k, std::int32_t t) {
         // projections have 84 groups and must use dynamic group bounds or their last 256 input
         // features are silently omitted.
         if (t == 1) { return launch_q4_gemv_r4_w1_direct; }
-        if (t == 2) { return launch_q4_gemv_r4_w1_t2_shared; }
+        if (t >= 2 && t <= 7) { return launch_q4_gemv_r4_w1_small_t_shared; }
         return launch_q4_mma_r64_c128;
     }
 

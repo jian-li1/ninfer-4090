@@ -19,7 +19,7 @@ namespace {
                  "error: %s\nusage: ninfer_gemma4_31b_it_long_context ARTIFACT "
                  "[--max-context N] [--prefill N] [--chunk N] [--token ID] "
                  "[--tokens-file PATH] [--generate N] [--dump PATH] [--cuda-graph] "
-                 "[--qualify-graph-transactions] [--mtp1] [--no-decode]\n",
+                 "[--qualify-graph-transactions] [--mtp N] [--no-decode]\n",
                  message);
     std::exit(2);
 }
@@ -84,8 +84,8 @@ int main(int argc, char** argv) {
         } else if (argument == "--qualify-graph-transactions") {
             options.use_cuda_graph = true;
             options.qualify_graph_transactions = true;
-        } else if (argument == "--mtp1") {
-            options.use_mtp1 = true;
+        } else if (argument == "--mtp") {
+            options.mtp_draft_tokens = parse_u32(next("--mtp"), 1, 6, "--mtp");
         } else if (argument == "--no-decode") {
             options.run_deep_decode = false;
         } else {
@@ -110,8 +110,10 @@ int main(int argc, char** argv) {
             "free_graph=%zu graph_bytes=%zu largest_temporary=%zu graph_captures=%u "
             "graph_replays=%u graph_existing_workspace=%u graph_transactions=%u "
             "assistant_weights=%zu mtp_workspace=%zu free_assistant=%zu "
-            "mtp_proposed=%llu mtp_accepted=%llu mtp_first_draft=%d "
-            "assistant_ms=%.3f verify_ms=%.3f prefill_ms=%.3f decode_ms=%.3f greedy=%d\n",
+            "mtp_width=%u mtp_rounds=%llu mtp_proposed=%llu mtp_accepted=%llu "
+            "mtp_first_draft=%d assistant_ms=%.3f proposal_head_ms=%.3f verify_ms=%.3f "
+            "mtp_round_p50_ms=%.3f mtp_round_p95_ms=%.3f "
+            "prefill_ms=%.3f decode_ms=%.3f greedy=%d\n",
             options.maximum_context, result.final_frontier, result.weights_bytes,
             result.kv_payload_bytes, result.kv_metadata_bytes, result.workspace_bytes,
             result.free_after_weights, result.free_after_cache, result.free_after_workspace,
@@ -121,15 +123,35 @@ int main(int argc, char** argv) {
             result.graph_transaction_checks_passed ? 1U : 0U,
             result.assistant_weights_bytes, result.mtp_workspace_bytes,
             result.free_after_assistant,
+            result.mtp_draft_width,
+            static_cast<unsigned long long>(result.mtp_rounds),
             static_cast<unsigned long long>(result.mtp_proposed_tokens),
             static_cast<unsigned long long>(result.mtp_accepted_tokens),
             result.mtp_first_draft_token, result.assistant_milliseconds,
-            result.verify_milliseconds,
+            result.proposal_head_milliseconds, result.verify_milliseconds,
+            result.mtp_round_p50_milliseconds, result.mtp_round_p95_milliseconds,
             result.prefill_milliseconds, result.decode_milliseconds, result.greedy_token);
         if (!result.generated_tokens.empty()) {
             std::printf("GEMMA4_GENERATED_IDS=");
             for (std::size_t index = 0; index < result.generated_tokens.size(); ++index) {
                 std::printf("%s%d", index == 0 ? "" : ",", result.generated_tokens[index]);
+            }
+            std::printf("\n");
+        }
+        if (!result.mtp_accepted_per_position.empty()) {
+            std::printf("GEMMA4_MTP_ACCEPTED_PER_POSITION=");
+            for (std::size_t index = 0; index < result.mtp_accepted_per_position.size(); ++index) {
+                std::printf("%s%llu", index == 0 ? "" : ",",
+                            static_cast<unsigned long long>(
+                                result.mtp_accepted_per_position[index]));
+            }
+            std::printf("\n");
+        }
+        if (!result.mtp_first_round_drafts.empty()) {
+            std::printf("GEMMA4_MTP_FIRST_ROUND_DRAFTS=");
+            for (std::size_t index = 0; index < result.mtp_first_round_drafts.size(); ++index) {
+                std::printf("%s%d", index == 0 ? "" : ",",
+                            result.mtp_first_round_drafts[index]);
             }
             std::printf("\n");
         }

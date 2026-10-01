@@ -254,17 +254,33 @@ Phase 0 full-suite result remains the regression baseline; all Phase 2 affected 
   also matched each other.
 - A separate 8,192-token prefill produced the same sixteen greedy IDs with ordinary and MTP1
   execution. All 15 deep-context proposals were rejected without changing the cache frontier.
-- On the Phase 11 4K corpus, graphed MTP1 took 1,717.122 ms for 64 tokens versus 1,828.164 ms for
-  eager target decode and 1,789.035 ms for the target graph. The 49 proposals accepted 15 tokens.
+- The original 1,717.122 ms Phase 12 4K result was superseded after Phase 13 found a later-column
+  sliding-attention arithmetic mismatch. The corrected MTP1 route takes 1,874.372 ms there and
+  preserves exact ordinary output.
 - The complete 262K target, assistant, cache, workspaces, and graph retain 1,294,663,680 bytes free.
   Commands, exact residency, and qualification details are in
   [the Phase 12 record](../benchmarks/gemma4-phase12-mtp1.md).
 
+## Phase 13 record
+
+- Fixed-position assistant feedback and exact target verification support one through six drafts.
+  Target Q4 and both attention schedules preserve ordinary T=1 arithmetic through T=7.
+- A new bit-exact regression compares a seven-column sliding verifier with seven ordinary calls;
+  all six real-model widths match the ordinary 64-token output and cache frontier.
+- Width 1 wins the code, prose, and mixed sweep by 14.71%, 20.75%, and 18.72%. Two additional
+  mixed repeats improve 20.95% and 20.77%, with identical output and acceptance.
+- MTP remains workload-sensitive: exact MTP1 is 4.77% slower at the maintained 4K context and
+  33.78% slower for sixteen all-rejected outputs at 8K.
+- Only selected width 1 owns a CUDA Graph. Widths 2-6 remain supported by the common eager loop.
+- The complete 262K target, assistant, cache, workspaces, and selected graph retain
+  1,294,663,680 bytes free. Detailed evidence is in
+  [the Phase 13 record](../benchmarks/gemma4-phase13-mtp-widths.md).
+
 ## Open blockers and limitations
 
 - The generated artifact remains local under `/dev/shm`; publication is a later product phase.
-- The correctness route is not yet published through `ninfer::Engine`; product integration remains
-  Phase 15, after draft-width selection and persistent continuation qualification.
+- The correctness route is not yet published through `ninfer::Engine`; persistent continuation
+  qualification and product integration remain later phases.
 - Full-checkpoint fixture regeneration requires restaging the two immutable source checkpoints;
   they are intentionally not committed to this repository.
 - The repository-documented Python 3.11 interpreter path is absent on this machine. The isolated

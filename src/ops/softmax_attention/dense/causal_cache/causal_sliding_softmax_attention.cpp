@@ -102,7 +102,19 @@ void causal_sliding_softmax_attention(const Tensor& q, const Tensor& k, const Te
     // safe because entering the next modulo slot makes the evicted page older than W=1024 for
     // every query in this segment. Current rows therefore cross the same E8 boundary as history.
     detail::kv_cache_append_sliding_launch(k, v, positions, cache, stream);
-    detail::causal_sliding_attention_launch(q, positions, scale, cache, out, stream);
+    if (tokens <= 7) {
+        // Speculative verification must retain ordinary T=1 arithmetic for every possible
+        // committed prefix, including the bonus column after all drafts match.
+        for (std::int32_t token = 0; token < tokens; ++token) {
+            const Tensor q_token = q.slice(2, token, 1);
+            const Tensor position = positions.slice(0, token, 1);
+            Tensor out_token = out.slice(2, token, 1);
+            detail::causal_sliding_attention_launch(
+                q_token, position, scale, cache, out_token, stream);
+        }
+    } else {
+        detail::causal_sliding_attention_launch(q, positions, scale, cache, out, stream);
+    }
 }
 
 void shared_kv_sliding_softmax_attention(const Tensor& q,

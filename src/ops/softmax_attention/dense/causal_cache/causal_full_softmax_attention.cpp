@@ -158,9 +158,9 @@ void causal_full_softmax_attention(const Tensor& q, const Tensor& k, const Tenso
         return;
     }
 
-    // Gemma MTP verifies two tokens at once. Use the decode-width kernel independently for
-    // each query so its accepted-prefix arithmetic is bitwise identical to ordinary T=1.
-    const std::int32_t tile_tokens = tokens == 2 ? 1 : std::min(tokens, 4);
+    // Gemma MTP verifies up to seven tokens at once. Use the decode-width kernel independently
+    // for each query so every accepted-prefix column is bitwise identical to ordinary T=1.
+    const std::int32_t tile_tokens = tokens <= 7 ? 1 : std::min(tokens, 4);
     const std::int32_t splits = detail::causal_full_attention_split_capacity(envelope);
     allocate_partials(workspace, tile_tokens, splits, partial_acc, partial_m, partial_l);
     for (std::int32_t begin = 0; begin < tokens; begin += tile_tokens) {

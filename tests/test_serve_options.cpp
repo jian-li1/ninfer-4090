@@ -244,6 +244,18 @@ int main() {
     failures += check(dflash.speculative.proposal_head == ninfer::ProposalHead::Optimized,
                       "--lm-head-draft did not select the optimized proposal head");
 
+    const ServeOptions mtp6 = parse(
+        {"ninfer-serve", "model.ninfer", "--spec", "mtp", "--draft-tokens", "6"});
+    failures += check(mtp6.speculative.backend == ninfer::SpeculativeBackend::Mtp &&
+                          mtp6.speculative.draft_tokens == 6,
+                      "serve options did not preserve the maximum MTP draft count");
+    bool mtp7_rejected = false;
+    try {
+        (void)parse(
+            {"ninfer-serve", "model.ninfer", "--spec", "mtp", "--draft-tokens", "7"});
+    } catch (const std::invalid_argument&) { mtp7_rejected = true; }
+    failures += check(mtp7_rejected, "serve options accepted an unsupported MTP draft count");
+
     for (const auto k : {1U, 2U, 7U, 15U}) {
         const auto options = parse({"ninfer-serve", "model.ninfer", "--spec", "dflash2",
                                     "--draft-tokens", std::to_string(k), "--lm-head-draft"});

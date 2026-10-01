@@ -393,6 +393,10 @@ BenchOptions parse_args(int argc, char** argv) {
         throw std::invalid_argument("--prefill-chunk must be a multiple of 128");
     }
     product::validate_speculative_cli_options(options.speculative);
+    if (options.speculative.backend == SpeculativeBackend::Mtp &&
+        options.speculative.draft_tokens > 5) {
+        throw std::invalid_argument("Qwen3.6-27B MTP requires --draft-tokens in [1,5]");
+    }
     return options;
 }
 
