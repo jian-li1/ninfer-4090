@@ -29,8 +29,9 @@ approval requirements beyond the user's instructions and the actual execution en
 
 NInfer is a from-scratch C++/CUDA inference engine for maximum single-GPU performance on explicitly
 registered artifacts. Current identities are `qwen3.6-27b/groupwise-int`, `qwen3.6-27b/nvfp4`,
-`qwen3.8-27b/groupwise-int`, `qwen3.8-27b/nvfp4`, and `qwen3.6-35b-a3b/groupwise-int`.
-The implementation targets `sm_120a` and is tuned on NVIDIA GeForce RTX 5090.
+`qwen3.8-27b/groupwise-int`, `qwen3.8-27b/nvfp4`, `qwen3.6-35b-a3b/groupwise-int`, and
+`gemma4-31b-it/groupwise-int`. The primary implementation target is one 24 GiB NVIDIA GeForce RTX
+4090 (Ada Lovelace, compute capability `sm_89`) on Linux.
 
 Generation uses one GPU, one resident model, startup-fixed concurrency of one to eight requests,
 bounded FIFO ingress, no active-request preemption, and one compact decode batch per round.
@@ -51,6 +52,9 @@ Keep these ownership boundaries visible when selecting a design:
 - The Qwen3.6 family owns shared frontend semantics and compile-time planning/Program algorithms.
   The 27B and 35B-A3B packages are peer Variants owning their identities, bindings, execution leaves,
   and Program instance storage. Programs share no mutable state or device allocation.
+- The Gemma 4 family and Gemma 4 31B IT target are peer packages owning their heterogeneous
+  attention schedule, target bindings, execution leaves, and Program instance storage. Gemma does
+  not modify Qwen family scheduling.
 - Runtime owns common execution contracts and Engine publication policy; product/serving own input
   acquisition and protocol translation. Target packages do not acquire media or own transport.
 

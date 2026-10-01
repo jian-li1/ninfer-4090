@@ -11,6 +11,13 @@ This fork targets `sm_89` and Linux. Blackwell-only NVFP4/W4A4 execution is unav
 engine uses the same groupwise-int path as the 3090 base. The Windows path and the
 Qwen3.6-35B-A3B target are inherited but untested on the RTX 4090.
 
+Compile-time registered identities include `qwen3.6-27b/groupwise-int`,
+`qwen3.8-27b/groupwise-int`, `qwen3.6-35b-a3b/groupwise-int`, and the text-only
+`gemma4-31b-it/groupwise-int` target under active product integration. Gemma currently has its
+native artifact, model, heterogeneous KV, compressed attention, and 262K target-only execution
+routes; its public Engine/server route remains gated until the later integration phase. All RTX
+4090 production builds use `CMAKE_CUDA_ARCHITECTURES=89`.
+
 ## Measured results on the RTX 4090
 
 Conditions: single request, greedy decoding, CUDA Graphs on, INT8 KV, `--prefill-chunk 1024`,

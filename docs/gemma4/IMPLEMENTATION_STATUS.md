@@ -28,8 +28,8 @@ commit that completes each phase.
 | 6 | complete | Exact E8 parity, retrieval gates, production throughput, and physical bytes for D256/D512 |
 | 7 | complete | D256 Q32/KV16 E8 ring attention is 4.68-19.56x faster than the reference path |
 | 8 | complete | D512 GQA-8 global attention is correct through 128K and stable through 256K |
-| 9 | complete | 262,144 allocation and 260K cold prefill/deep decode pass with 1.66 GiB slack |
-| 10 | conditional | Shared global K/V latent cache; implement only if Phase 9/MTP/graph memory evidence triggers it |
+| 9 | complete | 262K allocation plus exact five-needle 240K full-model semantic retrieval |
+| 10 | deferred/conditional | Re-evaluate after graph, MTP, selected draft width, and server residency measurements |
 | 11 | pending | CUDA Graph decode |
 | 12 | pending | Official Gemma MTP1 |
 | 13 | pending | MTP2 through MTP6 measurement and selection |
@@ -218,7 +218,8 @@ Phase 0 full-suite result remains the regression baseline; all Phase 2 affected 
 - The real 15.806 GiB target plus complete 262,144-token RK4V4-E8 cache and bounded workspaces starts with 1,785,397,248 bytes (1.66 GiB) free. Exact KV payload is 5,971,640,320 bytes and metadata is 32,920 bytes.
 - A real-model 260,000-token cold prefill completed in 793,626.625 ms with no host paging. One isolated 60-layer decode at that frontier took 32.562 ms and committed frontier 260,001.
 - Deterministic E8 retrieval passed at 240K and 260K: both needles ranked first; 260K recall@32 was 0.71875 and score cosine was 0.986491.
-- The maintained real-artifact test preserves five-token BF16-reference greedy parity and 65-token output invariance across 32- and 64-token chunk schedules. The exact 262K layout/memory contract is covered without requiring the artifact.
+- The full 31B model retrieved all five requested semantic values exactly from token positions 12K, 60K, 120K, 180K, and 228K in one 240,000-token prompt. Prefill took 707,340.688 ms; peak GPU use was 22,378 MiB.
+- The maintained real-artifact test preserves five-token BF16-reference greedy parity, varied three-token generation invariance, and 65-token output invariance across chunk schedules. The exact 262K layout/memory contract is covered without requiring the artifact.
 - Ordinary RK4V4-E8 exceeds the preferred 512 MiB reserve by 3.4x, so Phase 10 shared-global-latent cache is not triggered by Phase 9 capacity. Commands and the complete memory/execution record are in [the Phase 9 qualification](../benchmarks/gemma4-phase9-262k.md).
 
 ## Open blockers and limitations
