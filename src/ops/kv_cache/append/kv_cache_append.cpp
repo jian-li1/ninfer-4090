@@ -13,7 +13,6 @@ namespace {
 
 constexpr std::int32_t kHeadDim       = 128;
 constexpr std::int32_t kKVHeads       = 8;
-constexpr std::int32_t kFullHeadDim   = 256;
 constexpr const char* kAppendOp       = "kv_cache_append";
 constexpr const char* kPrefixAppendOp = "kv_cache_append_prefix";
 
@@ -31,14 +30,15 @@ void require_contiguous_nonnull(const Tensor& tensor, const char* op, const char
     }
 }
 
-std::uint32_t validate_full_cache(const PagedKVLayerView& cache, std::int32_t kv_heads) {
+std::uint32_t validate_full_cache(const PagedKVLayerView& cache, std::int32_t head_dim,
+                                  std::int32_t kv_heads) {
     PagedKVStorageLayout layout{};
     try {
-        layout = paged_kv_storage_layout(cache.storage, kFullHeadDim);
+        layout = paged_kv_storage_layout(cache.storage, head_dim);
     } catch (const std::invalid_argument&) {
         throw std::invalid_argument("kv_cache_append: invalid cache geometry or storage");
     }
-    if (cache.num_kv_heads != kv_heads || cache.head_dim != kFullHeadDim) {
+    if (cache.num_kv_heads != kv_heads || cache.head_dim != head_dim) {
         throw std::invalid_argument("kv_cache_append: invalid cache geometry or storage");
     }
 
@@ -182,19 +182,27 @@ void kv_cache_append(const Tensor& k, const Tensor& v, const Tensor& positions,
     if (positions.dtype != DType::I32) {
         throw std::invalid_argument("kv_cache_append: positions must be I32");
     }
+    const std::int32_t head_dim = k.ne[0];
     const std::int32_t kv_heads = k.ne[1];
-    if (kv_heads != 4 && kv_heads != 2) {
+    const bool d256_existing = head_dim == 256 && (kv_heads == 4 || kv_heads == 2);
+    const bool d256_gemma =
+        head_dim == 256 && kv_heads == 16 &&
+        (cache.storage == KvCacheStorage::BFloat16 ||
+         cache.storage == KvCacheStorage::RK4V4E8);
+    const bool d512 = head_dim == 512 && kv_heads == 4 &&
+                      cache.storage == KvCacheStorage::RK4V4E8;
+    if (!d256_existing && !d256_gemma && !d512) {
         throw std::invalid_argument("kv_cache_append: unsupported KV head geometry");
     }
     const std::int32_t tokens = k.ne[2];
     if (tokens <= 0) { throw std::invalid_argument("kv_cache_append: T must be positive"); }
-    require_shape(k, kFullHeadDim, kv_heads, tokens, 1, kAppendOp, "k");
-    require_shape(v, kFullHeadDim, kv_heads, tokens, 1, kAppendOp, "v");
+    require_shape(k, head_dim, kv_heads, tokens, 1, kAppendOp, "k");
+    require_shape(v, head_dim, kv_heads, tokens, 1, kAppendOp, "v");
     require_shape(positions, tokens, 1, 1, 1, kAppendOp, "positions");
     require_contiguous_nonnull(k, kAppendOp, "k");
     require_contiguous_nonnull(v, kAppendOp, "v");
     require_contiguous_nonnull(positions, kAppendOp, "positions");
-    const std::uint32_t capacity = validate_full_cache(cache, kv_heads);
+    const std::uint32_t capacity = validate_full_cache(cache, head_dim, kv_heads);
     if (static_cast<std::uint32_t>(tokens) > capacity) {
         throw std::invalid_argument("kv_cache_append: T exceeds cache capacity");
     }

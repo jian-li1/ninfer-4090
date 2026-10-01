@@ -62,7 +62,7 @@ void launch_full(const Tensor& k, const Tensor& v, const Tensor& positions, Cach
                 const int max_tiles = static_cast<int>(div_up(tokens + TokensPerTile, TokensPerTile));
                 const dim3 fill_grid(static_cast<unsigned>(max_tiles),
                                      static_cast<unsigned>(Geometry::KVHeads),
-                                     static_cast<unsigned>(kKVCacheInt8Groups));
+                                     static_cast<unsigned>(Geometry::Groups));
                 kv_cache_append_full_i8_page_kernel<Geometry, PackedV, RotateK, RotateV, PackedK,
                                                     E8Lattice, E8Root, Metadata>
                     <<<fill_grid, kBlock, 0, stream>>>(
@@ -76,7 +76,7 @@ void launch_full(const Tensor& k, const Tensor& v, const Tensor& positions, Cach
             } else {
                 constexpr int FillWarps = kBlock / 32;
                 const std::int64_t fill_units =
-                    static_cast<std::int64_t>(tokens) * Geometry::KVHeads * kKVCacheInt8Groups;
+                    static_cast<std::int64_t>(tokens) * Geometry::KVHeads * Geometry::Groups;
                 const int fill_grid =
                     static_cast<int>(div_up(fill_units, static_cast<std::int64_t>(FillWarps)));
                 kv_cache_append_full_i8_kernel<Geometry, PackedV, RotateK, RotateV, PackedK,
@@ -109,7 +109,7 @@ void launch_full(const Tensor& k, const Tensor& v, const Tensor& positions, Cach
     constexpr int Block         = Geometry::KVHeads == 4 ? 128 : 96;
     constexpr int VecElems      = 8;
     const std::int64_t elements = static_cast<std::int64_t>(tokens) * Geometry::KVHeads *
-                                  (kKVCacheAppendFullHeadDim / VecElems);
+                                  (Geometry::HeadDim / VecElems);
     const int fill_grid = static_cast<int>(div_up(elements, static_cast<std::int64_t>(Block)));
     kv_cache_append_full_bf16_kernel<Geometry, Metadata><<<fill_grid, Block, 0, stream>>>(
         static_cast<const __nv_bfloat16*>(k.data), static_cast<const __nv_bfloat16*>(v.data),
@@ -197,6 +197,14 @@ void launch_cyclic(const Tensor& k, const Tensor& v, const Tensor& positions, co
 void kv_cache_append_launch(const Tensor& k, const Tensor& v, const Tensor& positions,
                             PagedKVLayerView cache, cudaStream_t stream) {
     const PagedKVDirectMetadata metadata{static_cast<const std::int32_t*>(cache.block_table.data)};
+    if (k.ne[0] == KVCacheAppendD512Kv4::HeadDim) {
+        launch_full<KVCacheAppendD512Kv4>(k, v, positions, cache, metadata, stream);
+        return;
+    }
+    if (k.ne[1] == KVCacheAppendD256Kv16::KVHeads) {
+        launch_full<KVCacheAppendD256Kv16>(k, v, positions, cache, metadata, stream);
+        return;
+    }
     if (k.ne[1] == KVCacheAppendD256Kv4::KVHeads) {
         launch_full<KVCacheAppendD256Kv4>(k, v, positions, cache, metadata, stream);
         return;
@@ -225,6 +233,14 @@ void kv_cache_append_batch_launch(const Tensor& k, const Tensor& v, const Tensor
             .table_rows   = static_cast<const std::int32_t*>(table_rows.data),
             .table_stride = cache.block_tables.ne[0],
         };
+        if (k.ne[0] == KVCacheAppendD512Kv4::HeadDim) {
+            launch_full<KVCacheAppendD512Kv4>(k, v, positions, cache, metadata, stream);
+            return;
+        }
+        if (k.ne[1] == KVCacheAppendD256Kv16::KVHeads) {
+            launch_full<KVCacheAppendD256Kv16>(k, v, positions, cache, metadata, stream);
+            return;
+        }
         if (k.ne[1] == KVCacheAppendD256Kv4::KVHeads) {
             launch_full<KVCacheAppendD256Kv4>(k, v, positions, cache, metadata, stream);
             return;

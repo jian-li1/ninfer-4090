@@ -626,7 +626,8 @@ instruction utilization require a profiler capture of the complete public call.
 
 `ninfer_kv_cache_append_bench` unifies the two public append contracts without combining them in
 one timed body. `--mode full` calls full D256 KV publication for KV4/KV2 and BF16, INT8-G64,
-FP8-E4M3FN-row256, NVFP4-G16, or K8V4 caches. Its report keeps key/value vector bytes separate for
+FP8-E4M3FN-row256, NVFP4-G16, or K8V4 caches. It also registers Gemma 4
+`gemma-local` (D256/H16) and `gemma-global` (D512/H4) with the `rk4v4-e8` profile. Its report keeps key/value vector bytes separate for
 asymmetric storage profiles. `--mode prefix` calls device-count prefix publication for BF16
 D128/KV8 paged caches or cyclic caches with `--cyclic-capacity 2048|4096`. `T` is the physical input
 width and `C` is the actual device commit count. `--max-count N` selects the host envelope upper
@@ -640,6 +641,9 @@ cmake --build build --parallel --target ninfer_kv_cache_append_bench
 ./build/bench/ninfer_kv_cache_append_bench \
   --mode full --full-geometry all --kv-dtype all --tokens 1,2,4,8,16 \
   --context 128 --execution graph --cache cold --warmup 10 --repeat 61
+./build/bench/ninfer_kv_cache_append_bench \
+  --mode full --full-geometry gemma-local --kv-dtype rk4v4-e8 \
+  --tokens 1,32,128,1024 --context 128 --execution graph --cache warm
 ./build/bench/ninfer_kv_cache_append_bench \
   --mode prefix --tokens 1,2,4,8,16 --counts 0,1,2,4,8,16 \
   --layout all --execution graph --cache cold --warmup 10 --repeat 61

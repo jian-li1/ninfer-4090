@@ -30,7 +30,6 @@ using namespace ninfer;
 
 namespace {
 
-constexpr std::int32_t kFullHeadDim         = 256;
 constexpr std::int32_t kPrefixHeadDim       = 128;
 constexpr std::int32_t kPrefixKvHeads       = 8;
 constexpr std::int32_t kPagedPrefixCapacity = 4096;
@@ -38,8 +37,8 @@ constexpr std::size_t kFlushBytes           = std::size_t{256} << 20;
 constexpr double kRtx5090DramGBs            = 1792.0;
 
 enum class Mode : std::uint8_t { Full, Prefix, All };
-enum class FullGeometryChoice : std::uint8_t { Kv4, Kv2, All };
-enum class KvChoice : std::uint8_t { Bf16, Int8, Fp8, Nvfp4, K8V4, All };
+enum class FullGeometryChoice : std::uint8_t { Kv4, Kv2, GemmaLocal, GemmaGlobal, All };
+enum class KvChoice : std::uint8_t { Bf16, Int8, Fp8, Nvfp4, K8V4, E8, All };
 enum class LayoutChoice : std::uint8_t { Paged, Cyclic, All };
 enum class Execution : std::uint8_t { Eager, Graph, Both };
 enum class CacheMode : std::uint8_t { Cold, Warm, Both };
@@ -47,11 +46,14 @@ enum class CacheState : std::uint8_t { Cold, Warm };
 
 struct FullGeometry {
     const char* name;
+    std::int32_t head_dim;
     std::int32_t kv_heads;
 };
 
-constexpr FullGeometry kFullKv4{"d256-kv4", 4};
-constexpr FullGeometry kFullKv2{"d256-kv2", 2};
+constexpr FullGeometry kFullKv4{"d256-kv4", 256, 4};
+constexpr FullGeometry kFullKv2{"d256-kv2", 256, 2};
+constexpr FullGeometry kGemmaLocal{"gemma-local-d256-kv16", 256, 16};
+constexpr FullGeometry kGemmaGlobal{"gemma-global-d512-kv4", 512, 4};
 
 struct Options {
     Mode mode                        = Mode::All;
@@ -99,8 +101,8 @@ struct Result {
     std::fprintf(stderr,
                  "error: %s\n"
                  "usage: ninfer_kv_cache_append_bench [--mode full|prefix|all] "
-                 "[--full-geometry d256-kv4|d256-kv2|all] "
-                 "[--kv-dtype bf16|int8|fp8|nvfp4|k8v4|all] "
+                 "[--full-geometry d256-kv4|d256-kv2|gemma-local|gemma-global|all] "
+                 "[--kv-dtype bf16|int8|fp8|nvfp4|k8v4|rk4v4-e8|all] "
                  "[--layout paged|cyclic|all] [--tokens T,...] [--counts C,...] "
                  "[--cyclic-capacity 2048|4096] [--batch B] "
                  "[--context L] [--execution eager|graph|both] [--cache cold|warm|both] "
@@ -163,10 +165,14 @@ Options parse_options(int argc, char** argv) {
                 options.full_geometry = FullGeometryChoice::Kv4;
             else if (value == "d256-kv2")
                 options.full_geometry = FullGeometryChoice::Kv2;
+            else if (value == "gemma-local")
+                options.full_geometry = FullGeometryChoice::GemmaLocal;
+            else if (value == "gemma-global")
+                options.full_geometry = FullGeometryChoice::GemmaGlobal;
             else if (value == "all")
                 options.full_geometry = FullGeometryChoice::All;
             else
-                usage("--full-geometry expects d256-kv4, d256-kv2, or all");
+                usage("--full-geometry expects d256-kv4, d256-kv2, gemma-local, gemma-global, or all");
         } else if (argument == "--kv-dtype") {
             const std::string_view value(next("--kv-dtype requires a value"));
             if (value == "bf16")
@@ -179,10 +185,12 @@ Options parse_options(int argc, char** argv) {
                 options.kv = KvChoice::Nvfp4;
             else if (value == "k8v4")
                 options.kv = KvChoice::K8V4;
+            else if (value == "rk4v4-e8")
+                options.kv = KvChoice::E8;
             else if (value == "all")
                 options.kv = KvChoice::All;
             else
-                usage("--kv-dtype expects bf16, int8, fp8, nvfp4, k8v4, or all");
+                usage("--kv-dtype expects bf16, int8, fp8, nvfp4, k8v4, rk4v4-e8, or all");
         } else if (argument == "--layout") {
             const std::string_view value(next("--layout requires a value"));
             if (value == "paged")
@@ -295,7 +303,7 @@ PagedKVLayerView make_full_view(DeviceBuffer& k, DeviceBuffer& v, DeviceBuffer& 
                                 DeviceBuffer& v_scale, DeviceBuffer& block_table,
                                 const FullGeometry& geometry, KvCacheStorage storage,
                                 std::int32_t padded) {
-    const PagedKVStorageLayout layout = paged_kv_storage_layout(storage, kFullHeadDim);
+    const PagedKVStorageLayout layout = paged_kv_storage_layout(storage, geometry.head_dim);
     const std::int32_t pages          = padded / kPagedKVPageSize;
     return {
         .k_pages =
@@ -315,7 +323,7 @@ PagedKVLayerView make_full_view(DeviceBuffer& k, DeviceBuffer& v, DeviceBuffer& 
                                        geometry.kv_heads, pages})
                              : Tensor(),
         .block_table   = Tensor(block_table.p, DType::I32, {pages}),
-        .head_dim      = kFullHeadDim,
+        .head_dim      = geometry.head_dim,
         .num_kv_heads  = geometry.kv_heads,
         .storage       = storage,
     };
@@ -326,10 +334,10 @@ public:
     FullCase(FullGeometry geometry, KvCacheStorage storage, std::int32_t tokens,
              std::int32_t context)
         : geometry_(geometry), storage_(storage),
-          storage_layout_(paged_kv_storage_layout(storage, kFullHeadDim)), tokens_(tokens),
+          storage_layout_(paged_kv_storage_layout(storage, geometry.head_dim)), tokens_(tokens),
           capacity_(context + tokens), padded_(align_context(capacity_)),
-          k_(bench::make_bf16(static_cast<std::size_t>(kFullHeadDim) * geometry.kv_heads * tokens)),
-          v_(bench::make_bf16(static_cast<std::size_t>(kFullHeadDim) * geometry.kv_heads * tokens)),
+          k_(bench::make_bf16(static_cast<std::size_t>(geometry.head_dim) * geometry.kv_heads * tokens)),
+          v_(bench::make_bf16(static_cast<std::size_t>(geometry.head_dim) * geometry.kv_heads * tokens)),
           positions_(static_cast<std::size_t>(tokens) * sizeof(std::int32_t)),
           cache_k_(bench::make_zeros(full_data_bytes(geometry, storage_layout_.key, padded_))),
           cache_v_(bench::make_zeros(full_data_bytes(geometry, storage_layout_.value, padded_))),
@@ -342,8 +350,8 @@ public:
                                     ? full_scale_bytes(geometry, storage_layout_.value, padded_)
                                     : std::size_t{1})),
           block_table_(static_cast<std::size_t>(padded_ / kPagedKVPageSize) * sizeof(std::int32_t)),
-          k_tensor_(k_.p, DType::BF16, {kFullHeadDim, geometry.kv_heads, tokens}),
-          v_tensor_(v_.p, DType::BF16, {kFullHeadDim, geometry.kv_heads, tokens}),
+          k_tensor_(k_.p, DType::BF16, {geometry.head_dim, geometry.kv_heads, tokens}),
+          v_tensor_(v_.p, DType::BF16, {geometry.head_dim, geometry.kv_heads, tokens}),
           positions_tensor_(positions_.p, DType::I32, {tokens}),
           cache_view_(make_full_view(cache_k_, cache_v_, cache_k_scale_, cache_v_scale_,
                                      block_table_, geometry, storage, padded_)) {
@@ -530,6 +538,8 @@ const char* storage_name(KvCacheStorage storage) {
         return "nvfp4";
     case KvCacheStorage::Fp8KeyNvfp4Value:
         return "k8v4";
+    case KvCacheStorage::RK4V4E8:
+        return "rk4v4-e8";
     }
     return "unknown";
 }
@@ -545,21 +555,21 @@ double full_vector_bytes(const PagedKVVectorLayout& layout) {
 }
 
 double full_logical_cache_bytes(const FullGeometry& geometry, std::int32_t tokens) {
-    const auto layout = paged_kv_storage_layout(KvCacheStorage::BFloat16, kFullHeadDim);
+    const auto layout = paged_kv_storage_layout(KvCacheStorage::BFloat16, geometry.head_dim);
     return static_cast<double>(layout.logical_bytes_per_token_head()) * geometry.kv_heads * tokens;
 }
 
 double full_physical_cache_bytes(const FullGeometry& geometry, KvCacheStorage storage,
                                  std::int32_t tokens) {
-    const auto layout = paged_kv_storage_layout(storage, kFullHeadDim);
+    const auto layout = paged_kv_storage_layout(storage, geometry.head_dim);
     return geometry.kv_heads * tokens *
            (full_vector_bytes(layout.key) + full_vector_bytes(layout.value));
 }
 
 double full_useful_bytes(const FullGeometry& geometry, KvCacheStorage storage,
                          std::int32_t tokens) {
-    const auto layout   = paged_kv_storage_layout(storage, kFullHeadDim);
-    const double input  = 2.0 * kFullHeadDim * geometry.kv_heads * tokens * 2.0;
+    const auto layout   = paged_kv_storage_layout(storage, geometry.head_dim);
+    const double input  = 2.0 * geometry.head_dim * geometry.kv_heads * tokens * 2.0;
     const double output = geometry.kv_heads * tokens *
                           (full_vector_bytes(layout.key) + full_vector_bytes(layout.value));
     return input + output;
@@ -660,7 +670,9 @@ void profile_case(Case& data, const char* label, const Options& options, DeviceB
 std::vector<FullGeometry> selected_geometries(FullGeometryChoice choice) {
     if (choice == FullGeometryChoice::Kv4) return {kFullKv4};
     if (choice == FullGeometryChoice::Kv2) return {kFullKv2};
-    return {kFullKv4, kFullKv2};
+    if (choice == FullGeometryChoice::GemmaLocal) return {kGemmaLocal};
+    if (choice == FullGeometryChoice::GemmaGlobal) return {kGemmaGlobal};
+    return {kFullKv4, kFullKv2, kGemmaLocal, kGemmaGlobal};
 }
 
 std::vector<KvCacheStorage> selected_storages(KvChoice choice) {
@@ -669,8 +681,18 @@ std::vector<KvCacheStorage> selected_storages(KvChoice choice) {
     if (choice == KvChoice::Fp8) return {KvCacheStorage::Fp8E4M3Row256};
     if (choice == KvChoice::Nvfp4) return {KvCacheStorage::Nvfp4Group16};
     if (choice == KvChoice::K8V4) return {KvCacheStorage::Fp8KeyNvfp4Value};
+    if (choice == KvChoice::E8) return {KvCacheStorage::RK4V4E8};
     return {KvCacheStorage::BFloat16, KvCacheStorage::Int8Group64, KvCacheStorage::Fp8E4M3Row256,
-            KvCacheStorage::Nvfp4Group16, KvCacheStorage::Fp8KeyNvfp4Value};
+            KvCacheStorage::Nvfp4Group16, KvCacheStorage::Fp8KeyNvfp4Value,
+            KvCacheStorage::RK4V4E8};
+}
+
+bool full_case_supported(const FullGeometry& geometry, KvCacheStorage storage) {
+    if (geometry.head_dim == 512) return storage == KvCacheStorage::RK4V4E8;
+    if (geometry.kv_heads == 16) {
+        return storage == KvCacheStorage::BFloat16 || storage == KvCacheStorage::RK4V4E8;
+    }
+    return true;
 }
 
 template <class Case>
@@ -755,6 +777,9 @@ int main(int argc, char** argv) {
             if (options.mode == Mode::Full) {
                 const FullGeometry geometry  = geometries.front();
                 const KvCacheStorage storage = storages.front();
+                if (!full_case_supported(geometry, storage)) {
+                    usage("selected full geometry does not support selected KV dtype");
+                }
                 FullCase data(geometry, storage, options.tokens.front(), options.context);
                 const std::string label = std::string("mode=full geometry=") + geometry.name +
                                           " kv=" + storage_name(storage);
@@ -788,8 +813,9 @@ int main(int argc, char** argv) {
         if (options.mode != Mode::Prefix) {
             for (const FullGeometry& geometry : geometries) {
                 for (const KvCacheStorage storage : storages) {
+                    if (!full_case_supported(geometry, storage)) continue;
                     for (const std::int32_t tokens : options.tokens) {
-                        const auto storage_layout = paged_kv_storage_layout(storage, kFullHeadDim);
+                        const auto storage_layout = paged_kv_storage_layout(storage, geometry.head_dim);
                         const double key_vector_bytes   = full_vector_bytes(storage_layout.key);
                         const double value_vector_bytes = full_vector_bytes(storage_layout.value);
                         const double physical_cache_bytes =

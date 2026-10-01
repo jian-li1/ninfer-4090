@@ -19,8 +19,8 @@ struct TextKvGroupPlanSpec {
     // Additional local-ring copies retained outside active rows.
     std::uint32_t local_checkpoint_capacity = 0;
     std::int32_t table_rows = 0;
-    KvCacheStorage sliding_storage = KvCacheStorage::BFloat16;
-    KvCacheStorage global_storage = KvCacheStorage::BFloat16;
+    KvCacheStorage sliding_storage = KvCacheStorage::RK4V4E8;
+    KvCacheStorage global_storage = KvCacheStorage::RK4V4E8;
 };
 
 struct TextKvLayerAddress {

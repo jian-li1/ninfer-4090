@@ -111,22 +111,27 @@ void exercise_target_plan() {
     });
     require(specs[0].group_id == kSlidingKvGroup &&
                 specs[0].retention == KvGroupRetention::SlidingWindow &&
-                specs[0].layer_count == 50 && specs[0].geometry.planes.size() == 100 &&
+                specs[0].layer_count == 50 && specs[0].geometry.planes.size() == 200 &&
                 specs[0].physical_page_groups == 67,
             "Gemma sliding group plan is incorrect");
     require(specs[1].group_id == kGlobalKvGroup &&
                 specs[1].retention == KvGroupRetention::FullHistory &&
-                specs[1].layer_count == 10 && specs[1].geometry.planes.size() == 20 &&
+                specs[1].layer_count == 10 && specs[1].geometry.planes.size() == 40 &&
                 specs[1].physical_page_groups == 515,
             "Gemma global group plan is incorrect");
-    require(specs[0].geometry.planes[0].dtype == ninfer::DType::BF16 &&
-                specs[0].geometry.planes[1].dtype == ninfer::DType::FP16 &&
-                specs[0].geometry.planes[0].leading_extent == 256 &&
+    require(specs[0].geometry.planes[0].dtype == ninfer::DType::U8 &&
+                specs[0].geometry.planes[1].dtype == ninfer::DType::U8 &&
+                specs[0].geometry.planes[2].dtype == ninfer::DType::FP16 &&
+                specs[0].geometry.planes[0].leading_extent == 128 &&
+                specs[0].geometry.planes[2].leading_extent == 4 &&
                 specs[0].geometry.planes[0].head_extent == 16,
-            "Gemma sliding BF16 geometry is incorrect");
-    require(specs[1].geometry.planes[0].leading_extent == 512 &&
+            "Gemma sliding E8 geometry is incorrect");
+    require(specs[1].geometry.planes[0].dtype == ninfer::DType::U8 &&
+                specs[1].geometry.planes[2].dtype == ninfer::DType::FP16 &&
+                specs[1].geometry.planes[0].leading_extent == 256 &&
+                specs[1].geometry.planes[2].leading_extent == 8 &&
                 specs[1].geometry.planes[0].head_extent == 4,
-            "Gemma global BF16 geometry is incorrect");
+            "Gemma global E8 geometry is incorrect");
     require(text_kv_layer_address(0) == TextKvLayerAddress{kSlidingKvGroup, 0} &&
                 text_kv_layer_address(5) == TextKvLayerAddress{kGlobalKvGroup, 0} &&
                 text_kv_layer_address(6) == TextKvLayerAddress{kSlidingKvGroup, 5} &&

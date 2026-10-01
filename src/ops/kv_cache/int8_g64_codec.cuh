@@ -20,25 +20,25 @@ inline constexpr int kKVCacheInt8HeadDim = 256;
 inline constexpr int kKVCacheInt8Group   = 64;
 inline constexpr int kKVCacheInt8Groups  = kKVCacheInt8HeadDim / kKVCacheInt8Group;
 
-template <typename Geometry>
+template <typename Geometry, int HeadDim = kKVCacheInt8HeadDim>
 __device__ __forceinline__ std::int64_t
 kv_cache_int8_quant_code_index(int physical_page, int kv_head, int d, int page_offset) {
-    return paged_kv_element_offset<kKVCacheInt8HeadDim, Geometry::KVHeads>(physical_page, kv_head,
-                                                                           page_offset, d);
+    return paged_kv_element_offset<HeadDim, Geometry::KVHeads>(physical_page, kv_head, page_offset,
+                                                               d);
 }
 
-template <typename Geometry>
+template <typename Geometry, int HeadDim = kKVCacheInt8HeadDim>
 __device__ __forceinline__ std::int64_t
 kv_cache_int8_quant_scale_index(int physical_page, int kv_head, int group, int page_offset) {
-    return paged_kv_element_offset<kKVCacheInt8Groups, Geometry::KVHeads>(physical_page, kv_head,
-                                                                          page_offset, group);
+    return paged_kv_element_offset<HeadDim / kKVCacheInt8Group, Geometry::KVHeads>(
+        physical_page, kv_head, page_offset, group);
 }
 
-template <typename Geometry>
+template <typename Geometry, int HeadDim = kKVCacheInt8HeadDim>
 __device__ __forceinline__ std::int64_t kv_cache_int8_quant_src_index(int kv_head, int d,
                                                                       int token) {
     return static_cast<std::int64_t>(d) +
-           static_cast<std::int64_t>(kKVCacheInt8HeadDim) *
+           static_cast<std::int64_t>(HeadDim) *
                (static_cast<std::int64_t>(kv_head) +
                 static_cast<std::int64_t>(Geometry::KVHeads) * token);
 }
@@ -90,10 +90,10 @@ __device__ __forceinline__ int4 kv_cache_int8_dequant_i8x8_from(const std::int8_
 // and scalar helpers.
 // ---------------------------------------------------------------------------
 
-template <typename Geometry>
+template <typename Geometry, int HeadDim = kKVCacheInt8HeadDim>
 __device__ __forceinline__ std::int64_t kv_cache_i4_code_index(int physical_page, int kv_head,
                                                                int packed_d, int page_offset) {
-    return paged_kv_element_offset<kKVCacheInt8HeadDim / 2, Geometry::KVHeads>(
+    return paged_kv_element_offset<HeadDim / 2, Geometry::KVHeads>(
         physical_page, kv_head, page_offset, packed_d);
 }
 

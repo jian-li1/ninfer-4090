@@ -79,7 +79,7 @@ MTP 与 DFlash 在一个 Engine 内互斥，因此当前最多有两个 growing 
 | MTP | MTP persistent K/V 与其 code/scale planes | MTP KV frontier |
 | DFlash Full | DFlash persistent full-context K/V | DFlash context frontier |
 
-Main Text 与 MTP 使用 Engine 选择的 BF16、INT8-G64、FP8-E4M3FN-row256、NVFP4-G16 或 K8V4
+Main Text 与 MTP 使用 Engine 选择的 BF16、INT8-G64、FP8-E4M3FN-row256、NVFP4-G16、K8V4 或 RK4V4-E8
 KV profile；DFlash Full 使用自己的 BF16 profile。`BFloat16` 名称下的物理 layout 为 BF16 K、FP16 V，
 写入端将 BF16 V 一次转换为 FP16。K8V4 是封闭的非对称 profile，不是运行时 bit-width 组合：K 固定为
 FP8-E4M3FN-row256，V 固定为 NVFP4-G16。
@@ -309,6 +309,9 @@ D256 Main/MTP profile 的单 token/head 物理 payload 为：
 | FP8-E4M3FN-row256 | 256 B + 2 B | 256 B + 2 B | 516 B |
 | NVFP4-G16 | 128 B + 16 B | 128 B + 16 B | 288 B |
 | K8V4 | 256 B + 2 B | 128 B + 16 B | 402 B |
+| RK4V4-E8 | 128 B + 8 B | 128 B + 8 B | 272 B |
+
+D512 RK4V4-E8 使用每个 plane 256 B packed code + 16 B FP16 scale，K+V 为 544 B。
 
 K/V 的 code 和 scale planes 具有各自的 dtype、leading extent 和 group size；它们仍共享 page-group
 identity、frontier 和 lifetime。Capacity curve、Device/Host replica、continuation transfer 和 memory

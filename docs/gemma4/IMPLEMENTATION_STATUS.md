@@ -25,7 +25,7 @@ commit that completes each phase.
 | 3 | complete | Reproducible `.ninfer` converter, closed binder, and 15.806 GiB target residency |
 | 4 | complete | Reference-correct C++/CUDA short-context execution and first-divergence parity |
 | 5 | complete | Atomic heterogeneous local/global KV groups qualified through 32K |
-| 6 | pending | E8 codecs for D256 and D512 |
+| 6 | complete | Exact E8 parity, retrieval gates, production throughput, and physical bytes for D256/D512 |
 | 7 | pending | Optimized D256 sliding attention |
 | 8 | pending | Optimized D512 global attention |
 | 9 | pending | 262,144-token target-only execution |
@@ -165,6 +165,25 @@ Phase 0 full-suite result remains the regression baseline; all Phase 2 affected 
 - The existing physical KV suite and Qwen runtime/state/cache regressions remain green. The Phase 4
   prefix oracle remains transient until the optimized local/global attention leaves in Phases 7–8
   consume the new cache views.
+
+## Phase 6 record
+
+- Generalized the production group-64 append geometry from fixed D256 assumptions to exact
+  D256/H16 and D512/H4 Gemma registrations. Gemma H16 accepts BF16 or RK4V4-E8 and D512
+  accepts RK4V4-E8; unrelated layouts fail closed.
+- The public append route matches an independent oracle exactly for every code byte and FP16 scale
+  through both scheduling paths, page crossings, nonidentity mappings, zeros, sentinels, and guards.
+- K reconstruction measured relative L2 0.203940-0.206853 and cosine 0.979107-0.979717; V
+  measured relative L2 0.188849-0.189368 and cosine 0.982202-0.982379.
+- Deterministic D512 retrieval retained the rank-1 needle at 32K and 64K, with recall of
+  0.8125 and 0.7500 and score cosine of 0.986487 and 0.986418.
+- At T=1024, warm CUDA Graph append measured 518.4 GB/s for local D256/H16 and 476.7 GB/s
+  for global D512/H4 on RTX 4090. Detailed commands and results are in
+  [the Phase 6 E8 qualification](../benchmarks/gemma4-phase6-e8.md).
+- Packed K+V payload is 272 bytes per D256 head-token and 544 bytes per D512 head-token. All 50
+  local layers consume 222,822,400-236,748,800 bytes across the 16-17 resident-page range;
+  combined local/global payload is 935,854,080-949,780,480 bytes at 32K and
+  1,648,885,760-1,662,812,160 bytes at 64K.
 
 ## Open blockers and limitations
 

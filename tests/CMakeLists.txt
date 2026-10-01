@@ -337,6 +337,9 @@ ninfer_add_op_test(ninfer_sliding_window_attention_test
 ninfer_add_op_test(ninfer_kv_cache_append_test
   SOURCES ops/test_kv_cache_append.cpp
   LIBRARIES ninfer_ops)
+ninfer_add_op_test(ninfer_gemma4_e8_kv_codec_test
+  SOURCES ops/test_gemma4_e8_kv_codec.cpp
+  LIBRARIES ninfer_ops)
 ninfer_add_op_test(ninfer_e8_root_codec_test
   SOURCES ops/test_e8_root_codec.cu
   LIBRARIES ninfer_ops)
