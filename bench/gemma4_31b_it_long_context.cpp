@@ -19,7 +19,7 @@ namespace {
                  "error: %s\nusage: ninfer_gemma4_31b_it_long_context ARTIFACT "
                  "[--max-context N] [--prefill N] [--chunk N] [--token ID] "
                  "[--tokens-file PATH] [--generate N] [--dump PATH] [--cuda-graph] "
-                 "[--qualify-graph-transactions] [--no-decode]\n",
+                 "[--qualify-graph-transactions] [--mtp1] [--no-decode]\n",
                  message);
     std::exit(2);
 }
@@ -84,6 +84,8 @@ int main(int argc, char** argv) {
         } else if (argument == "--qualify-graph-transactions") {
             options.use_cuda_graph = true;
             options.qualify_graph_transactions = true;
+        } else if (argument == "--mtp1") {
+            options.use_mtp1 = true;
         } else if (argument == "--no-decode") {
             options.run_deep_decode = false;
         } else {
@@ -107,7 +109,9 @@ int main(int argc, char** argv) {
             "kv_metadata=%zu workspace=%zu free_weights=%zu free_cache=%zu free_workspace=%zu "
             "free_graph=%zu graph_bytes=%zu largest_temporary=%zu graph_captures=%u "
             "graph_replays=%u graph_existing_workspace=%u graph_transactions=%u "
-            "prefill_ms=%.3f decode_ms=%.3f greedy=%d\n",
+            "assistant_weights=%zu mtp_workspace=%zu free_assistant=%zu "
+            "mtp_proposed=%llu mtp_accepted=%llu mtp_first_draft=%d "
+            "assistant_ms=%.3f verify_ms=%.3f prefill_ms=%.3f decode_ms=%.3f greedy=%d\n",
             options.maximum_context, result.final_frontier, result.weights_bytes,
             result.kv_payload_bytes, result.kv_metadata_bytes, result.workspace_bytes,
             result.free_after_weights, result.free_after_cache, result.free_after_workspace,
@@ -115,6 +119,12 @@ int main(int argc, char** argv) {
             result.largest_temporary_bytes, result.graph_capture_count,
             result.graph_replay_count, result.graph_uses_existing_workspace ? 1U : 0U,
             result.graph_transaction_checks_passed ? 1U : 0U,
+            result.assistant_weights_bytes, result.mtp_workspace_bytes,
+            result.free_after_assistant,
+            static_cast<unsigned long long>(result.mtp_proposed_tokens),
+            static_cast<unsigned long long>(result.mtp_accepted_tokens),
+            result.mtp_first_draft_token, result.assistant_milliseconds,
+            result.verify_milliseconds,
             result.prefill_milliseconds, result.decode_milliseconds, result.greedy_token);
         if (!result.generated_tokens.empty()) {
             std::printf("GEMMA4_GENERATED_IDS=");

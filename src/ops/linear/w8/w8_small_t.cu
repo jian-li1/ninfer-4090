@@ -78,9 +78,34 @@ constexpr auto kDFlash2AttentionLaunchers = make_launchers<W8DFlash2AttentionPro
                                                            kW8DFlash2AttentionFirstSmallT>(
     std::make_index_sequence<kW8DFlash2AttentionLastSmallT - kW8DFlash2AttentionFirstSmallT + 1>{});
 
+template <class Geometry>
+bool launch_gemma4_assistant_decode(const Tensor& x, const Weight& weight, Tensor& out,
+                                    cudaStream_t stream) {
+    if (weight.n != Geometry::kOutputRows || weight.k != Geometry::kInputRows ||
+        weight.padded_shape[1] != Geometry::kInputRows || x.ne[1] != 1) {
+        return false;
+    }
+    launch_exact<Geometry, 1>(x, weight, out, stream);
+    return true;
+}
+
 } // namespace
 
 void launch_w8_small_t(const Tensor& x, const Weight& weight, Tensor& out, cudaStream_t stream) {
+    if (launch_gemma4_assistant_decode<W8Gemma4AssistantInputGeometry>(
+            x, weight, out, stream) ||
+        launch_gemma4_assistant_decode<W8Gemma4AssistantSlidingQueryGeometry>(
+            x, weight, out, stream) ||
+        launch_gemma4_assistant_decode<W8Gemma4AssistantFullQueryGeometry>(
+            x, weight, out, stream) ||
+        launch_gemma4_assistant_decode<W8Gemma4AssistantSlidingOutputGeometry>(
+            x, weight, out, stream) ||
+        launch_gemma4_assistant_decode<W8Gemma4AssistantFullOutputGeometry>(
+            x, weight, out, stream) ||
+        launch_gemma4_assistant_decode<W8Gemma4AssistantFeedbackGeometry>(
+            x, weight, out, stream)) {
+        return;
+    }
     if (weight.n == W8VocabularyProjectionGeometry::kOutputRows &&
         weight.k == W8VocabularyProjectionGeometry::kInputRows &&
         weight.padded_shape[1] == W8VocabularyProjectionGeometry::kInputRows &&

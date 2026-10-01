@@ -197,6 +197,10 @@ __global__ void fp8_logits_kernel(const __nv_bfloat16* hidden, const std::uint8_
     if (threadIdx.x == 0) {
         const float dot = __bfloat162float(__float2bfloat16(
             partial * __bfloat162float(scales[row])));
+        if (softcap <= 0.0F) {
+            logits[row] = dot;
+            return;
+        }
         const float divided = __bfloat162float(__float2bfloat16(dot / softcap));
         const float softened = __bfloat162float(__float2bfloat16(tanhf(divided)));
         logits[row] = __bfloat162float(__float2bfloat16(softcap * softened));
@@ -242,6 +246,24 @@ void prepare_qkv(const Tensor& packed, const Tensor& query_gain, const Tensor& k
     CUDA_CHECK(cudaGetLastError());
 }
 
+void prepare_query(const Tensor& projected, const Tensor& query_gain,
+                   std::int32_t head_dim, float theta, std::int32_t active_pairs,
+                   const Tensor& positions, Tensor& query, cudaStream_t stream) {
+    const int tokens = projected.ne[1];
+    if (projected.dtype != DType::BF16 || projected.ne[0] != 32 * head_dim ||
+        positions.dtype != DType::I32 || positions.ne[0] != tokens ||
+        !positions.is_contiguous() || positions.data == nullptr) {
+        throw std::invalid_argument("prepare_query received an invalid Q-only profile");
+    }
+    prepare_qkv_kernel<<<tokens * 32, 256, 0, stream>>>(
+        static_cast<const __nv_bfloat16*>(projected.data),
+        static_cast<const __nv_bfloat16*>(query_gain.data), nullptr, projected.ne[0],
+        tokens, head_dim, 0, theta, active_pairs,
+        static_cast<const std::int32_t*>(positions.data),
+        static_cast<__nv_bfloat16*>(query.data), nullptr, nullptr);
+    CUDA_CHECK(cudaGetLastError());
+}
+
 void reference_attention(const Tensor& query, const Tensor& key, const Tensor& value,
                          std::int32_t window, Tensor& output, cudaStream_t stream) {
     const int tokens = query.ne[2];
@@ -278,6 +300,16 @@ void fp8_tied_logits(const Tensor& last_hidden, const Weight& embedding, float s
         static_cast<const std::uint8_t*>(embedding.qdata),
         static_cast<const __nv_bfloat16*>(embedding.scales), embedding.n, embedding.k,
         softcap, static_cast<float*>(logits.data));
+    CUDA_CHECK(cudaGetLastError());
+}
+
+void fp8_tied_logits_raw(const Tensor& hidden, const Weight& embedding, Tensor& logits,
+                         cudaStream_t stream) {
+    fp8_logits_kernel<<<embedding.n, 256, 0, stream>>>(
+        static_cast<const __nv_bfloat16*>(hidden.data),
+        static_cast<const std::uint8_t*>(embedding.qdata),
+        static_cast<const __nv_bfloat16*>(embedding.scales), embedding.n, embedding.k,
+        0.0F, static_cast<float*>(logits.data));
     CUDA_CHECK(cudaGetLastError());
 }
 

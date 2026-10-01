@@ -8,6 +8,12 @@ namespace ninfer::ops::detail {
 W8Launch select_w8_a16_launch(std::int32_t n, std::int32_t k, std::int32_t t) {
     if (t <= 0) { throw std::invalid_argument("w8 linear: unsupported shape or T"); }
 
+    if (t == 1 &&
+        ((n == 1024 && (k == 10752 || k == 8192 || k == 16384)) ||
+         (k == 1024 && (n == 5376 || n == 8192 || n == 16384)))) {
+        return launch_w8_small_t;
+    }
+
     switch (k) {
     case 10240:
         if (n == 5120) {

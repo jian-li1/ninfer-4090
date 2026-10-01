@@ -29,6 +29,27 @@ int feature_conformance() {
 int w8_a16_conformance() {
     int failures = 0;
 
+    for (const auto& shape : std::array{
+             ShapeCase{1024, 10752, 181U, Comparison::Sampled, false,
+                       std::span<const Invocation>()},
+             ShapeCase{8192, 1024, 183U, Comparison::Sampled, false,
+                       std::span<const Invocation>()},
+             ShapeCase{16384, 1024, 185U, Comparison::Sampled, false,
+                       std::span<const Invocation>()},
+             ShapeCase{1024, 8192, 187U, Comparison::Sampled, false,
+                       std::span<const Invocation>()},
+             ShapeCase{1024, 16384, 189U, Comparison::Sampled, false,
+                       std::span<const Invocation>()},
+             ShapeCase{5376, 1024, 191U, Comparison::Sampled, false,
+                       std::span<const Invocation>()},
+         }) {
+        const std::array calls{a16(1)};
+        ShapeCase decode = shape;
+        decode.invocations = calls;
+        failures += run_shape("W8_A16_gemma4_assistant", ActivationCompute::A16,
+                              make_w8g32_f16s_weight, decode);
+    }
+
     std::vector<Invocation> kN248320K5120;
     for (int t = 1; t <= 128; ++t) kN248320K5120.push_back(a16(t));
     kN248320K5120.push_back(a16(129));

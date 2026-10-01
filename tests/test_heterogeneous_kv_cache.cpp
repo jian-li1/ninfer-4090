@@ -225,6 +225,44 @@ void exercise_device_transactions() {
     require_physical_page(cache.plane(10, 0), committed_page, 0x5a,
                           "rollback changed committed tail payload");
 
+    {
+        auto transaction = cache.begin_transaction(0, 10, 2);
+        require_throws<std::invalid_argument>(
+            [&] { transaction.commit_prefix(0); },
+            "transaction accepted an empty committed prefix");
+        require_throws<std::invalid_argument>(
+            [&] { transaction.commit_prefix(3); },
+            "transaction accepted a prefix beyond its target");
+        const std::int32_t staged_page =
+            read_table(transaction.execution_view(10).block_table)[0];
+        fill_physical_page(transaction.plane(10, 0), staged_page, 0x6b);
+        transaction.commit_prefix(1);
+        require(cache.frontier(0) == 11 &&
+                    read_table(committed_local.block_table)[0] == staged_page,
+                "same-page prefix commit published the wrong frontier or table");
+        require_physical_page(cache.plane(10, 0), staged_page, 0x6b,
+                              "same-page prefix commit lost retained payload");
+    }
+
+    commit_to(cache, 0, 63);
+    {
+        const std::vector<std::int32_t> before = read_table(committed_local.block_table);
+        auto transaction = cache.begin_transaction(0, 63, 2);
+        const std::vector<std::int32_t> staged =
+            read_table(transaction.execution_view(10).block_table);
+        require(staged[0] >= 0 && staged[1] >= 0 && staged[0] != staged[1],
+                "cross-page transaction did not reserve both suffix pages");
+        fill_physical_page(transaction.plane(10, 0), staged[0], 0x7c);
+        transaction.commit_prefix(1);
+        const std::vector<std::int32_t> committed = read_table(committed_local.block_table);
+        require(cache.frontier(0) == 64 && committed[0] == staged[0] &&
+                    committed[1] == before[1] && cache.resident_pages(0, 10) == 1 &&
+                    cache.resident_pages(0, 20) == 1,
+                "cross-page prefix commit retained a rejected suffix page");
+        require_physical_page(cache.plane(10, 0), staged[0], 0x7c,
+                              "cross-page prefix commit lost accepted payload");
+    }
+
     commit_to(cache, 0, 1023);
     require(cache.resident_pages(0, 10) == 16 && cache.resident_pages(0, 20) == 16,
             "1023-token residency is incorrect");

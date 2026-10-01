@@ -244,6 +244,31 @@ int run_sequence(int tokens) {
         const int count = std::min(kPage, tokens - begin);
         failures += run_segment(fixture, begin, count, begin + count == tokens);
     }
+    std::vector<float> q = make_values(kQHeads, tokens, 1, 0.1F);
+    const std::vector<std::int32_t> last_key{tokens - 1};
+    DeviceBuffer d_q = to_device_bf16(q);
+    DeviceBuffer d_last_key = to_device(last_key);
+    GuardedDeviceBuffer d_shared_out(static_cast<std::size_t>(kD) * kQHeads * 2);
+    Tensor tq(d_q.p, DType::BF16, {kD, kQHeads, 1});
+    Tensor tp(d_last_key.p, DType::I32, {1});
+    Tensor out(d_shared_out.data(), DType::BF16, {kD, kQHeads, 1});
+    ops::shared_kv_sliding_softmax_attention(tq, tp, kGeometry, kWindow, kScale,
+                                             fixture.cache, out, nullptr);
+    cuda_synchronize();
+    failures += d_shared_out.verify_guards("gemma4 shared sliding output guards");
+    const auto host_key_codes =
+        from_device<std::uint8_t>(fixture.key_codes.data(), fixture.key_codes.bytes());
+    const auto host_value_codes =
+        from_device<std::uint8_t>(fixture.value_codes.data(), fixture.value_codes.bytes());
+    const auto host_key_scales = from_device<std::uint16_t>(
+        fixture.key_scales.data(), fixture.key_scales.bytes() / sizeof(std::uint16_t));
+    const auto host_value_scales = from_device<std::uint16_t>(
+        fixture.value_scales.data(), fixture.value_scales.bytes() / sizeof(std::uint16_t));
+    const auto expected = oracle_token(q, 0, tokens - 1, host_key_codes, host_value_codes,
+                                       host_key_scales, host_value_scales, fixture.table);
+    const auto got = from_device_bf16(d_shared_out.data(), static_cast<std::size_t>(kD) * kQHeads);
+    failures += verify_reduction("gemma4 shared sliding T=" + std::to_string(tokens), got,
+                                 expected, kCriterion);
     const std::string label = "gemma4 sliding T=" + std::to_string(tokens);
     failures += fixture.key_codes.verify_guards(label + " K guards");
     failures += fixture.value_codes.verify_guards(label + " V guards");

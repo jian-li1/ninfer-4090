@@ -158,17 +158,59 @@ void causal_full_softmax_attention(const Tensor& q, const Tensor& k, const Tenso
         return;
     }
 
-    const std::int32_t tile_tokens = std::min(tokens, 4);
+    // Gemma MTP verifies two tokens at once. Use the decode-width kernel independently for
+    // each query so its accepted-prefix arithmetic is bitwise identical to ordinary T=1.
+    const std::int32_t tile_tokens = tokens == 2 ? 1 : std::min(tokens, 4);
     const std::int32_t splits = detail::causal_full_attention_split_capacity(envelope);
     allocate_partials(workspace, tile_tokens, splits, partial_acc, partial_m, partial_l);
-    for (std::int32_t begin = 0; begin < tokens; begin += 4) {
-        const std::int32_t count = std::min<std::int32_t>(4, tokens - begin);
+    for (std::int32_t begin = 0; begin < tokens; begin += tile_tokens) {
+        const std::int32_t count = std::min(tile_tokens, tokens - begin);
         const Tensor q_tile = q.slice(2, begin, count);
         const Tensor positions_tile = positions.slice(0, begin, count);
         Tensor out_tile = out.slice(2, begin, count);
         detail::causal_full_attention_launch(q_tile, positions_tile, envelope, cache, partial_acc,
                                              partial_m, partial_l, out_tile, stream);
     }
+}
+
+void shared_kv_full_softmax_attention(const Tensor& q,
+                                      const Tensor& last_key_positions,
+                                      AttentionHeadGeometry geometry, float scale,
+                                      const PagedKVLayerView& cache,
+                                      CausalAttentionExecutionEnvelope envelope,
+                                      WorkspaceArena& workspace, Tensor& out,
+                                      cudaStream_t stream) {
+    validate_profile(geometry, cache.storage, envelope, 1, 1,
+                     "shared_kv_full_softmax_attention");
+    if (q.dtype != DType::BF16 || out.dtype != DType::BF16 ||
+        last_key_positions.dtype != DType::I32) {
+        throw std::invalid_argument("shared_kv_full_softmax_attention: invalid input dtype");
+    }
+    if (!std::isfinite(scale) || std::abs(scale - kScale) > 1.0e-7F) {
+        throw std::invalid_argument("shared_kv_full_softmax_attention: scale must be 1.0");
+    }
+    require_shape(q, kHeadDim, kQHeads, 1, 1, "q");
+    require_shape(last_key_positions, 1, 1, 1, 1, "last key positions");
+    require_shape(out, kHeadDim, kQHeads, 1, 1, "out");
+    require_contiguous(q, "q");
+    require_contiguous(last_key_positions, "last key positions");
+    require_contiguous(out, "out");
+    const std::uint32_t cache_capacity = validate_cache(cache);
+    if (envelope.max_visible_keys > cache_capacity) {
+        throw std::invalid_argument(
+            "shared_kv_full_softmax_attention: execution envelope exceeds cache");
+    }
+
+    auto workspace_scope = workspace.scope();
+    Tensor partial_acc;
+    Tensor partial_m;
+    Tensor partial_l;
+    if (envelope.max_visible_keys >= tensor_core_route_threshold(1)) {
+        const std::int32_t splits = detail::causal_full_attention_split_capacity(envelope);
+        allocate_partials(workspace, 1, splits, partial_acc, partial_m, partial_l);
+    }
+    detail::causal_full_attention_launch(q, last_key_positions, envelope, cache,
+                                         partial_acc, partial_m, partial_l, out, stream);
 }
 
 } // namespace ninfer::ops

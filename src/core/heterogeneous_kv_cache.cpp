@@ -685,6 +685,50 @@ void HeterogeneousKVTransaction::commit(cudaStream_t stream) {
     impl_.reset();
 }
 
+void HeterogeneousKVTransaction::commit_prefix(std::uint32_t token_count,
+                                               cudaStream_t stream) {
+    if (impl_ == nullptr) { throw std::logic_error("heterogeneous KV transaction is empty"); }
+    const std::uint32_t total = impl_->target - impl_->first;
+    if (token_count == 0 || token_count > total) {
+        throw std::invalid_argument("heterogeneous KV commit prefix is outside the transaction");
+    }
+    if (token_count == total) {
+        commit(stream);
+        return;
+    }
+
+    HeterogeneousKVCache::Impl& cache = *impl_->cache->impl_;
+    HeterogeneousKVCache::Impl::Row& row = cache.require_row(impl_->row);
+    const std::uint32_t target = checked_add(
+        impl_->first, token_count, "heterogeneous KV prefix frontier overflow");
+    for (std::size_t index = 0; index < cache.groups.size(); ++index) {
+        HeterogeneousKVCache::Impl::Group& group = *cache.groups[index];
+        HeterogeneousKVCache::Impl::RowGroup& row_group = row.groups[index];
+        const Tensor committed = group.tables.row(row_group.execution_row.handle());
+        const Tensor staging =
+            group.transaction_tables.row(row_group.transaction_row.handle());
+        CUDA_CHECK(cudaMemcpyAsync(staging.data, committed.data, committed.bytes(),
+                                   cudaMemcpyDeviceToDevice, stream));
+        const std::uint32_t last_retained_block =
+            (target - 1U) / group.layout.spec.geometry.page_tokens;
+        std::erase_if(impl_->groups[index].pages, [&](const Binding& binding) {
+            return binding.logical_block > last_retained_block;
+        });
+        for (const Binding& binding : impl_->groups[index].pages) {
+            const std::uint32_t slot =
+                group.layout.spec.retention == KvGroupRetention::SlidingWindow
+                    ? binding.logical_block % group.layout.table_page_capacity
+                    : binding.logical_block;
+            const DeviceKVPageHandle handle = binding.page.handle();
+            group.transaction_tables.publish(
+                row_group.transaction_row.handle(), slot,
+                std::span<const DeviceKVPageHandle>(&handle, 1), stream);
+        }
+    }
+    impl_->target = target;
+    commit(stream);
+}
+
 HeterogeneousKVCheckpoint HeterogeneousKVCache::checkpoint(std::int32_t row,
                                                            cudaStream_t stream) {
     Impl::Row& source = impl_->require_row(row);

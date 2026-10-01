@@ -72,6 +72,12 @@ using W8MtpDownProjectionGeometry          = W8LinearGeometry<5120, 17408>;
 using W835bMtpProjectionGeometry           = W8LinearGeometry<2048, 4096>;
 using W8DFlash2AttentionProjectionGeometry = W8LinearGeometry<6144, 5120>;
 using W8N5120K25600Geometry                = W8LinearGeometry<5120, 25600>;
+using W8Gemma4AssistantInputGeometry       = W8LinearGeometry<1024, 10752>;
+using W8Gemma4AssistantSlidingQueryGeometry = W8LinearGeometry<8192, 1024>;
+using W8Gemma4AssistantFullQueryGeometry   = W8LinearGeometry<16384, 1024>;
+using W8Gemma4AssistantSlidingOutputGeometry = W8LinearGeometry<1024, 8192>;
+using W8Gemma4AssistantFullOutputGeometry  = W8LinearGeometry<1024, 16384>;
+using W8Gemma4AssistantFeedbackGeometry    = W8LinearGeometry<5376, 1024>;
 
 inline constexpr std::int32_t kW8VocabularyFirstSmallT         = 1;
 inline constexpr std::int32_t kW8VocabularyLastSmallT          = 33;
@@ -92,6 +98,30 @@ inline constexpr std::int32_t kW8DFlash2AttentionLastSmallT    = 53;
 
 template <class Geometry, int ActiveTokens>
 struct W8LinearSmallTProductionSchedule;
+
+template <class Geometry>
+struct W8Gemma4AssistantDecodeSchedule {
+    using Type = W8SmallTMmaSchedule<8, 8, 2, W8SmallTMmaScaleAccess::Direct>;
+};
+
+template <>
+struct W8LinearSmallTProductionSchedule<W8Gemma4AssistantInputGeometry, 1>
+    : W8Gemma4AssistantDecodeSchedule<W8Gemma4AssistantInputGeometry> {};
+template <>
+struct W8LinearSmallTProductionSchedule<W8Gemma4AssistantSlidingQueryGeometry, 1>
+    : W8Gemma4AssistantDecodeSchedule<W8Gemma4AssistantSlidingQueryGeometry> {};
+template <>
+struct W8LinearSmallTProductionSchedule<W8Gemma4AssistantFullQueryGeometry, 1>
+    : W8Gemma4AssistantDecodeSchedule<W8Gemma4AssistantFullQueryGeometry> {};
+template <>
+struct W8LinearSmallTProductionSchedule<W8Gemma4AssistantSlidingOutputGeometry, 1>
+    : W8Gemma4AssistantDecodeSchedule<W8Gemma4AssistantSlidingOutputGeometry> {};
+template <>
+struct W8LinearSmallTProductionSchedule<W8Gemma4AssistantFullOutputGeometry, 1>
+    : W8Gemma4AssistantDecodeSchedule<W8Gemma4AssistantFullOutputGeometry> {};
+template <>
+struct W8LinearSmallTProductionSchedule<W8Gemma4AssistantFeedbackGeometry, 1>
+    : W8Gemma4AssistantDecodeSchedule<W8Gemma4AssistantFeedbackGeometry> {};
 
 template <int ActiveTokens>
 struct W8LinearSmallTProductionSchedule<W8MtpInputProjectionGeometry, ActiveTokens> {

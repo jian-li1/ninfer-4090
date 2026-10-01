@@ -183,6 +183,14 @@ void causal_sliding_softmax_attention(const Tensor& q, const Tensor& k, const Te
                                       std::uint32_t window, float scale, PagedKVLayerView cache,
                                       Tensor& out, cudaStream_t stream);
 
+/** Gemma assistant Q-only attention over the retained target sliding cache. */
+void shared_kv_sliding_softmax_attention(const Tensor& q,
+                                         const Tensor& last_key_positions,
+                                         AttentionHeadGeometry geometry,
+                                         std::uint32_t window, float scale,
+                                         const PagedKVLayerView& cache, Tensor& out,
+                                         cudaStream_t stream);
+
 /**
  * Page-local causal full attention with fused compressed-cache publication.
  *
@@ -204,6 +212,15 @@ void causal_full_softmax_attention(const Tensor& q, const Tensor& k, const Tenso
                                    CausalAttentionExecutionEnvelope envelope,
                                    WorkspaceArena& workspace, Tensor& out,
                                    cudaStream_t stream);
+
+/** Gemma assistant Q-only attention over the complete target full-history cache. */
+void shared_kv_full_softmax_attention(const Tensor& q,
+                                      const Tensor& last_key_positions,
+                                      AttentionHeadGeometry geometry, float scale,
+                                      const PagedKVLayerView& cache,
+                                      CausalAttentionExecutionEnvelope envelope,
+                                      WorkspaceArena& workspace, Tensor& out,
+                                      cudaStream_t stream);
 
 /** Return caller-owned scratch capacity for every legal T in the inclusive interval. */
 [[nodiscard]] std::size_t causal_full_softmax_attention_workspace_capacity_bytes(

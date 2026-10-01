@@ -84,6 +84,46 @@ int main() {
             std::cerr << "graph Gemma decode changed across the local ring wrap\n";
             return 1;
         }
+
+        options.maximum_context = 2048;
+        options.input_tokens = varied_ids;
+        options.chunk_tokens = static_cast<std::uint32_t>(varied_ids.size());
+        options.generation_tokens = 64;
+        options.use_cuda_graph = false;
+        options.use_mtp1 = false;
+        const auto ordinary_mtp_reference = run_persistent_target(artifact, options);
+        options.use_mtp1 = true;
+        const auto mtp1 = run_persistent_target(artifact, options);
+        options.use_cuda_graph = true;
+        const auto mtp1_graph = run_persistent_target(artifact, options);
+        // Pinned BF16 assistant oracle for the six-token checkpoint prompt at position 6.
+        constexpr std::int32_t expected_first_draft = 236743;
+        if (mtp1.generated_tokens != ordinary_mtp_reference.generated_tokens ||
+            mtp1_graph.generated_tokens != ordinary_mtp_reference.generated_tokens ||
+            mtp1.final_frontier != ordinary_mtp_reference.final_frontier ||
+            mtp1_graph.final_frontier != ordinary_mtp_reference.final_frontier ||
+            mtp1.assistant_weights_bytes == 0 || mtp1.mtp_workspace_bytes == 0 ||
+            mtp1.kv_payload_bytes != ordinary_mtp_reference.kv_payload_bytes ||
+            mtp1.kv_metadata_bytes != ordinary_mtp_reference.kv_metadata_bytes ||
+            mtp1.mtp_accepted_tokens == 0 ||
+            mtp1.mtp_proposed_tokens <= mtp1.mtp_accepted_tokens ||
+            mtp1.mtp_first_draft_token != expected_first_draft ||
+            mtp1_graph.graph_capture_count != 1 ||
+            mtp1_graph.graph_replay_count != mtp1_graph.mtp_proposed_tokens) {
+            std::cerr << "Gemma MTP1 changed greedy output or omitted assistant execution"
+                      << " draft=" << mtp1.mtp_first_draft_token
+                      << " proposed=" << mtp1.mtp_proposed_tokens
+                      << " accepted=" << mtp1.mtp_accepted_tokens << "\nordinary:";
+            for (std::int32_t token : ordinary_mtp_reference.generated_tokens) {
+                std::cerr << ' ' << token;
+            }
+            std::cerr << "\nmtp1:";
+            for (std::int32_t token : mtp1.generated_tokens) {
+                std::cerr << ' ' << token;
+            }
+            std::cerr << '\n';
+            return 1;
+        }
         std::cout << "persistent Gemma target smoke passed\n";
         return 0;
     } catch (const std::exception& error) {

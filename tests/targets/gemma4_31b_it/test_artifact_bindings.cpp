@@ -133,6 +133,12 @@ void test_complete_target() {
         plan.bindings.assistant.has_value()) {
         throw std::runtime_error("Gemma target-only binding plan is incomplete");
     }
+    ninfer::artifact::Binder mtp_binder(reader);
+    expect_artifact_error(
+        [&] {
+            (void)ninfer::targets::gemma4_31b_it::detail::bind_artifact(mtp_binder, true);
+        },
+        "MTP residency accepted an artifact without an assistant companion");
 }
 
 void test_missing_and_malformed_objects() {
@@ -190,6 +196,18 @@ void test_real_artifact_when_requested() {
         !plan.bindings.assistant.has_value()) {
         throw std::runtime_error("real Gemma target-plus-assistant binding plan is incomplete");
     }
+    ninfer::artifact::Binder mtp_binder(reader);
+    const auto mtp_plan =
+        ninfer::targets::gemma4_31b_it::detail::bind_artifact(mtp_binder, true);
+    if (mtp_plan.materialization.object_count != 710 ||
+        mtp_plan.materialization.device_objects.size() != 706 ||
+        mtp_plan.materialization.host_objects.size() != 4 ||
+        mtp_plan.materialization.device_capacity_bytes != 17'453'691'904ULL ||
+        !mtp_plan.bindings.assistant.has_value() ||
+        mtp_plan.bindings.assistant->output_head.index !=
+            mtp_plan.bindings.assistant->token_embedding.index) {
+        throw std::runtime_error("real Gemma assistant residency plan is incomplete");
+    }
 }
 
 } // namespace
@@ -198,6 +216,7 @@ int main() {
     try {
         test_complete_target();
         test_missing_and_malformed_objects();
+        test_real_artifact_when_requested();
         return 0;
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';

@@ -303,6 +303,43 @@ int run_case(Fixture& fixture, int first, int tokens, const std::vector<int>& qu
     return failures;
 }
 
+int run_shared_case(Fixture& fixture, int last_key, const std::vector<int>& heads) {
+    std::vector<float> query = make_query(last_key + 1, 1);
+    const std::vector<std::int32_t> positions{last_key};
+    DeviceBuffer d_query = to_device_bf16(query);
+    DeviceBuffer d_positions = to_device(positions);
+    GuardedDeviceBuffer d_out(static_cast<std::size_t>(kD) * kQHeads * 2);
+    Tensor tq(d_query.p, DType::BF16, {kD, kQHeads, 1});
+    Tensor tp(d_positions.p, DType::I32, {1});
+    Tensor out(d_out.data(), DType::BF16, {kD, kQHeads, 1});
+    const ops::CausalAttentionExecutionEnvelope envelope{
+        1, static_cast<std::uint32_t>(last_key + 1)};
+    const std::size_t workspace_bytes =
+        ops::causal_full_softmax_attention_workspace_capacity_bytes(
+            kGeometry, KvCacheStorage::RK4V4E8, envelope, 1, 1);
+    DeviceArena workspace(std::max<std::size_t>(workspace_bytes, 256));
+    ops::shared_kv_full_softmax_attention(tq, tp, kGeometry, kScale, fixture.cache,
+                                          envelope, workspace, out, nullptr);
+    cuda_synchronize();
+    int failures = d_out.verify_guards("gemma4 shared global output guards");
+    const auto got = from_device_bf16(d_out.data(), static_cast<std::size_t>(kD) * kQHeads);
+    std::vector<double> actual;
+    std::vector<double> expected;
+    actual.reserve(static_cast<std::size_t>(heads.size()) * kD);
+    expected.reserve(actual.capacity());
+    for (int head : heads) {
+        const auto reference = oracle_head(fixture, query, 0, last_key, head);
+        const std::size_t base = static_cast<std::size_t>(head) * kD;
+        for (int d = 0; d < kD; ++d) {
+            actual.push_back(got[base + d]);
+            expected.push_back(reference[static_cast<std::size_t>(d)]);
+        }
+    }
+    failures += verify_reduction("gemma4 shared global P=" + std::to_string(last_key),
+                                 actual, expected, kCriterion);
+    return failures;
+}
+
 std::vector<int> all_heads() {
     std::vector<int> heads(kQHeads);
     for (int head = 0; head < kQHeads; ++head) heads[static_cast<std::size_t>(head)] = head;
@@ -327,6 +364,9 @@ int main() {
     failures += run_case(fixture, 4095, 1, {0}, all_heads());
     failures += run_case(fixture, 16383, 1, {0}, {0, 1, 7, 8, 15, 16, 23, 24, 31});
     failures += run_case(fixture, 131071, 1, {0}, {0, 8, 16, 24});
+    failures += run_shared_case(fixture, 127, all_heads());
+    failures += run_shared_case(fixture, 4095, {0, 1, 7, 8, 15, 16, 23, 24, 31});
+    failures += run_shared_case(fixture, 131071, {0, 8, 16, 24});
     failures += fixture.d_key_codes.verify_guards("gemma4 global K guards");
     failures += fixture.d_value_codes.verify_guards("gemma4 global V guards");
     failures += fixture.d_key_scales.verify_guards("gemma4 global K scale guards");

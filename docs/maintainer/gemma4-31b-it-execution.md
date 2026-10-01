@@ -60,6 +60,24 @@ The complete 262K graph profile reuses the existing activation and attention wor
 correctness, state-transition, memory, and whole-model latency evidence is recorded in
 [the Phase 11 qualification](../benchmarks/gemma4-phase11-cuda-graphs.md).
 
+## MTP1 execution
+
+MTP1 optionally materializes the official four-layer assistant. Assistant layers 0-2 read the
+fixed-position sliding K/V published by target layer 58; layer 3 reads target layer 59's full K/V.
+The assistant has no cache and its attention calls never append to target state.
+
+Each proposal is verified by a target T=2 execution over `[current, draft]`. One heterogeneous
+transaction reserves both positions. Acceptance commits both; rejection uses prefix commit to
+publish only the current position across both cache groups and release any suffix-only pages. The
+T=2 Q4 and full-attention schedules preserve the T=1 arithmetic for the accepted-prefix column,
+so batching verification cannot alter ordinary greedy output.
+
+The target verifier may use one CUDA Graph with stable activation and cache-table addresses;
+reservation and commit remain outside capture. Short and 8K-deep real-model checks match ordinary
+output exactly, accepted and rejected paths are both maintained, and the complete 262K MTP1
+profile retains 1.206 GiB free. Numerical, latency, and memory evidence is in
+[the Phase 12 qualification](../benchmarks/gemma4-phase12-mtp1.md).
+
 ## Qualification and first divergence
 
 Build `ninfer_gemma4_31b_it_reference`, then run the pinned six-token checkpoint prompt:

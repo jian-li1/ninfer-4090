@@ -31,7 +31,7 @@ commit that completes each phase.
 | 9 | complete | 262K allocation plus exact five-needle 240K full-model semantic retrieval |
 | 10 | deferred/conditional | Re-evaluate after graph, MTP, selected draft width, and server residency measurements |
 | 11 | complete | One graph spans absolute positions, ring wrap, rollback/restore, and 262K with a 2.13% decode benefit |
-| 12 | pending | Official Gemma MTP1 |
+| 12 | complete | Official MTP1 with exact greedy parity, atomic prefix commit, graph replay, and positive 4K speedup |
 | 13 | pending | MTP2 through MTP6 measurement and selection |
 | 14 | pending | Prefix reuse and persistent continuation qualification |
 | 15 | pending | Full server/product integration |
@@ -241,11 +241,30 @@ Phase 0 full-suite result remains the regression baseline; all Phase 2 affected 
   33,554,432 bytes, and capture adds no model workspace residency. Commands and detailed memory
   accounting are in [the Phase 11 qualification](../benchmarks/gemma4-phase11-cuda-graphs.md).
 
+## Phase 12 record
+
+- The optional 482,629,120-byte official assistant is materialized only for MTP. Its four Q-only
+  layers consume target layer 58 sliding K/V and target layer 59 full K/V without owning a cache.
+- A two-token target verifier uses one heterogeneous transaction. Accepted proposals commit both
+  tokens; rejected proposals commit the one-token prefix atomically across both cache groups.
+- Explicit assistant W8 and target T=2 Q4 registrations passed independent decoded-weight oracles.
+  Shared sliding/global attention passed independent packed-cache oracles through key 131,071.
+- The pinned first draft is token `236743`, matching Transformers. A 64-token real-model check
+  matched ordinary greedy output exactly with 24 accepts and 15 rejects; eager and graphed MTP1
+  also matched each other.
+- A separate 8,192-token prefill produced the same sixteen greedy IDs with ordinary and MTP1
+  execution. All 15 deep-context proposals were rejected without changing the cache frontier.
+- On the Phase 11 4K corpus, graphed MTP1 took 1,717.122 ms for 64 tokens versus 1,828.164 ms for
+  eager target decode and 1,789.035 ms for the target graph. The 49 proposals accepted 15 tokens.
+- The complete 262K target, assistant, cache, workspaces, and graph retain 1,294,663,680 bytes free.
+  Commands, exact residency, and qualification details are in
+  [the Phase 12 record](../benchmarks/gemma4-phase12-mtp1.md).
+
 ## Open blockers and limitations
 
 - The generated artifact remains local under `/dev/shm`; publication is a later product phase.
 - The correctness route is not yet published through `ninfer::Engine`; product integration remains
-  Phase 15, after heterogeneous cache, long-context, graph, and MTP work.
+  Phase 15, after draft-width selection and persistent continuation qualification.
 - Full-checkpoint fixture regeneration requires restaging the two immutable source checkpoints;
   they are intentionally not committed to this repository.
 - The repository-documented Python 3.11 interpreter path is absent on this machine. The isolated

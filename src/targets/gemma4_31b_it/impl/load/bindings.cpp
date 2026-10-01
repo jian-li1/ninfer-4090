@@ -22,8 +22,7 @@ artifact::ObjectHandle bind(artifact::Binder& binder, std::string_view name, Num
     return artifact::bind_tensor(binder, name, format, shape, placement);
 }
 
-AssistantPlan bind_assistant(artifact::Binder& binder) {
-    constexpr TensorPlacement placement = TensorPlacement::ValidateOnly;
+AssistantPlan bind_assistant(artifact::Binder& binder, TensorPlacement placement) {
     AssistantPlan out;
     out.token_embedding = bind(binder, "assistant/token_embedding",
                                NumericFormat::FP8_E4M3FN_ROW_BF16S, {262144, 1024}, placement);
@@ -64,7 +63,7 @@ AssistantPlan bind_assistant(artifact::Binder& binder) {
 
 } // namespace
 
-ArtifactLoadPlan bind_artifact(artifact::Binder& binder) {
+ArtifactLoadPlan bind_artifact(artifact::Binder& binder, bool materialize_assistant) {
     ArtifactLoadPlan load_plan;
     auto& out = load_plan.bindings;
     out.frontend = {
@@ -107,7 +106,11 @@ ArtifactLoadPlan bind_artifact(artifact::Binder& binder) {
     }
     out.final_norm = bind(binder, "text/final_norm", NumericFormat::BF16, {5376});
     if (binder.has_object("assistant/token_embedding")) {
-        out.assistant = bind_assistant(binder);
+        out.assistant = bind_assistant(
+            binder, materialize_assistant ? TensorPlacement::Device
+                                          : TensorPlacement::ValidateOnly);
+    } else if (materialize_assistant) {
+        throw artifact::ArtifactError("Gemma MTP requires an assistant companion");
     }
     load_plan.materialization = binder.finish();
     return load_plan;

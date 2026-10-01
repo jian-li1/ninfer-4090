@@ -105,4 +105,32 @@ void causal_sliding_softmax_attention(const Tensor& q, const Tensor& k, const Te
     detail::causal_sliding_attention_launch(q, positions, scale, cache, out, stream);
 }
 
+void shared_kv_sliding_softmax_attention(const Tensor& q,
+                                         const Tensor& last_key_positions,
+                                         AttentionHeadGeometry geometry,
+                                         std::uint32_t window, float scale,
+                                         const PagedKVLayerView& cache, Tensor& out,
+                                         cudaStream_t stream) {
+    if (!valid_attention_head_geometry(geometry) || geometry.head_dim != kHeadDim ||
+        geometry.query_heads != kQHeads || geometry.kv_heads != kKVHeads ||
+        window != kWindow) {
+        throw std::invalid_argument("shared_kv_sliding_softmax_attention: unsupported profile");
+    }
+    if (q.dtype != DType::BF16 || out.dtype != DType::BF16 ||
+        last_key_positions.dtype != DType::I32 || q.ne[2] != 1) {
+        throw std::invalid_argument("shared_kv_sliding_softmax_attention: invalid input");
+    }
+    if (!std::isfinite(scale) || std::abs(scale - kScale) > 1.0e-7F) {
+        throw std::invalid_argument("shared_kv_sliding_softmax_attention: scale must be 1.0");
+    }
+    require_shape(q, kHeadDim, kQHeads, 1, 1, "q");
+    require_shape(last_key_positions, 1, 1, 1, 1, "last key positions");
+    require_shape(out, kHeadDim, kQHeads, 1, 1, "out");
+    require_contiguous(q, "q");
+    require_contiguous(last_key_positions, "last key positions");
+    require_contiguous(out, "out");
+    validate_cache(cache);
+    detail::causal_sliding_attention_launch(q, last_key_positions, scale, cache, out, stream);
+}
+
 } // namespace ninfer::ops

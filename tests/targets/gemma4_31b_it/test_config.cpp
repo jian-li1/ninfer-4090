@@ -7,6 +7,7 @@
 
 #include <array>
 #include <cstddef>
+#include <cstdint>
 #include <cstdlib>
 #include <iostream>
 #include <string>
@@ -31,6 +32,9 @@ static_assert(Package::capabilities.audio == Capability::Unavailable);
 static_assert(AssistantConfig::layer_types ==
               std::array{AttentionType::Sliding, AttentionType::Sliding,
                          AttentionType::Sliding, AttentionType::Full});
+static_assert(AssistantConfig::shared_target_kv_layers ==
+              std::array<std::uint32_t, 4>{58, 58, 58, 59});
+static_assert(!AssistantConfig::owns_key_value_projections);
 
 [[noreturn]] void fail(std::string_view message) {
     std::cerr << "FAIL: " << message << '\n';

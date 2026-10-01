@@ -76,8 +76,9 @@ and source identity establish tying, and the runtime output-head view aliases
 | `model.norm.weight` | `[1024] BF16` | `assistant/final_norm` | `[1024] BF16` | verbatim |
 | `post_projection.weight` | `[5376,1024] BF16` | `assistant/output_projection` | `[5376,1024] W8G32_F16S` | quantize |
 
-The optional assistant adds exactly 44 tensors. The Phase 3 binder validates them but marks them
-`ValidateOnly`; Phase 13 owns execution and residency.
+The optional assistant adds exactly 44 tensors. Ordinary target execution validates them without
+materialization. MTP execution requests the closed assistant binding plan and materializes all 44;
+a target-only artifact therefore remains valid for ordinary execution and fails closed for MTP.
 
 ## Omissions and memory checkpoint
 
@@ -86,8 +87,9 @@ vision/image-projection tensors, and one tied `lm_head` alias. No processor conf
 multimodal payload is stored. Unknown or extra artifact objects are rejected by `Binder::finish`.
 
 The target load plan is 16,971,062,784 bytes (15.806 GiB), including object alignment. The
-optional assistant package occupies 482,629,120 artifact bytes but is nonresident in Phase 3. A
-complete locally generated target-plus-assistant artifact measured 17,485,998,848 bytes and had
+optional assistant package occupies 482,629,120 artifact bytes and is resident only when MTP is
+requested. A complete locally generated target-plus-assistant artifact measured 17,485,998,848
+bytes and had
 SHA-256 `11d70c73f940930035516113a4b1cc25c685111692c4e9f2b345b430234ec83a`.
 
 Representative source-dequantized versus NInfer-dequantized comparisons recorded maximum relative

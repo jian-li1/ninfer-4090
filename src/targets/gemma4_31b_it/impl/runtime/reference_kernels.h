@@ -15,6 +15,10 @@ void prepare_qkv(const Tensor& packed, const Tensor& query_gain, const Tensor& k
                  std::int32_t active_pairs, const Tensor& positions, Tensor& query,
                  Tensor& key, Tensor& value, cudaStream_t stream);
 
+void prepare_query(const Tensor& projected, const Tensor& query_gain,
+                   std::int32_t head_dim, float theta, std::int32_t active_pairs,
+                   const Tensor& positions, Tensor& query, cudaStream_t stream);
+
 void reference_attention(const Tensor& query, const Tensor& key, const Tensor& value,
                          std::int32_t window, Tensor& output, cudaStream_t stream);
 
@@ -25,6 +29,9 @@ void add_scaled(const Tensor& update, const Tensor& scalar, Tensor& residual,
 
 void fp8_tied_logits(const Tensor& last_hidden, const Weight& embedding, float softcap,
                      Tensor& logits, cudaStream_t stream);
+
+void fp8_tied_logits_raw(const Tensor& hidden, const Weight& embedding, Tensor& logits,
+                         cudaStream_t stream);
 
 void bf16_to_fp32(const Tensor& input, Tensor& output, cudaStream_t stream);
 

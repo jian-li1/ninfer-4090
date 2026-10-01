@@ -107,6 +107,8 @@ public:
     [[nodiscard]] Tensor plane(std::uint32_t group_id, std::size_t plane_index) const;
     // Commit or rollback only after work submitted through the staging view is ordered complete.
     void commit(cudaStream_t stream = nullptr);
+    // Publish the first token_count rows and discard the remaining reserved suffix.
+    void commit_prefix(std::uint32_t token_count, cudaStream_t stream = nullptr);
     void rollback() noexcept;
 
 private:

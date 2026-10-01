@@ -75,6 +75,7 @@ struct ArtifactLoadPlan {
     artifact::MaterializationPlan materialization;
 };
 
-[[nodiscard]] ArtifactLoadPlan bind_artifact(artifact::Binder& binder);
+[[nodiscard]] ArtifactLoadPlan bind_artifact(artifact::Binder& binder,
+                                             bool materialize_assistant = false);
 
 } // namespace ninfer::targets::gemma4_31b_it::detail
