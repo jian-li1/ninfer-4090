@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <vector>
 
 namespace ninfer::targets::gemma4_31b_it::detail {
 
@@ -11,6 +12,9 @@ struct PersistentRunOptions {
     std::uint32_t prefill_tokens = 0;
     std::uint32_t chunk_tokens = 64;
     std::int32_t input_token = 2;
+    std::vector<std::int32_t> input_tokens;
+    std::uint32_t generation_tokens = 0;
+    std::filesystem::path dump_directory;
     bool run_deep_decode = true;
     int device_id = 0;
 };
@@ -25,6 +29,7 @@ struct PersistentRunResult {
     std::size_t free_after_cache = 0;
     std::size_t free_after_workspace = 0;
     std::uint32_t final_frontier = 0;
+    std::vector<std::int32_t> generated_tokens;
     double prefill_milliseconds = 0.0;
     double decode_milliseconds = 0.0;
 };

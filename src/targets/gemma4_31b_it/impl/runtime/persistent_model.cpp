@@ -23,8 +23,11 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <fstream>
 #include <limits>
+#include <span>
 #include <stdexcept>
+#include <string>
 #include <vector>
 
 namespace ninfer::targets::gemma4_31b_it::detail {
@@ -83,21 +86,36 @@ private:
     cudaEvent_t stop_ = nullptr;
 };
 
+void write_bf16(const std::filesystem::path& directory, const std::string& name,
+                const Tensor& tensor) {
+    if (directory.empty()) return;
+    std::vector<std::uint16_t> host(static_cast<std::size_t>(tensor.numel()));
+    CUDA_CHECK(cudaDeviceSynchronize());
+    CUDA_CHECK(cudaMemcpy(host.data(), tensor.data, host.size() * sizeof(std::uint16_t),
+                          cudaMemcpyDeviceToHost));
+    std::ofstream output(directory / (name + ".bf16"), std::ios::binary | std::ios::trunc);
+    output.write(reinterpret_cast<const char*>(host.data()),
+                 static_cast<std::streamsize>(host.size() * sizeof(std::uint16_t)));
+    if (!output) throw std::runtime_error("failed to write Gemma persistent parity dump");
+}
+
 std::int32_t execute_chunk(const ModelWeights& weights, HeterogeneousKVCache& cache,
-                           std::uint32_t first, std::int32_t tokens,
-                           std::int32_t input_token, WorkspaceArena& activations,
+                           std::uint32_t first, std::span<const std::int32_t> input_tokens,
+                           WorkspaceArena& activations,
                            WorkspaceArena& attention_workspace, cudaStream_t stream,
-                           bool produce_logits) {
+                           bool produce_logits,
+                           const std::filesystem::path& dump_directory = {}) {
+    const std::int32_t tokens = static_cast<std::int32_t>(input_tokens.size());
     auto activation_scope = activations.scope();
     Tensor ids = activations.alloc(DType::I32, {tokens});
     Tensor positions = activations.alloc(DType::I32, {tokens});
-    std::vector<std::int32_t> host_ids(static_cast<std::size_t>(tokens), input_token);
     std::vector<std::int32_t> host_positions(static_cast<std::size_t>(tokens));
     for (std::int32_t token = 0; token < tokens; ++token) {
         host_positions[static_cast<std::size_t>(token)] =
             static_cast<std::int32_t>(first) + token;
     }
-    CUDA_CHECK(cudaMemcpyAsync(ids.data, host_ids.data(), host_ids.size() * sizeof(std::int32_t),
+    CUDA_CHECK(cudaMemcpyAsync(ids.data, input_tokens.data(),
+                               input_tokens.size_bytes(),
                                cudaMemcpyHostToDevice, stream));
     CUDA_CHECK(cudaMemcpyAsync(positions.data, host_positions.data(),
                                host_positions.size() * sizeof(std::int32_t),
@@ -124,6 +142,7 @@ std::int32_t execute_chunk(const ModelWeights& weights, HeterogeneousKVCache& ca
     auto transaction = cache.begin_transaction(0, first, static_cast<std::uint32_t>(tokens), stream);
     ops::embedding(ids, weights.embedding, hidden, stream);
     scale_embedding(hidden, TextConfig::embedding_scale_bf16, stream);
+    write_bf16(dump_directory, "persistent_embeddings", hidden);
 
     for (std::size_t layer = 0; layer < weights.layers.size(); ++layer) {
         const bool full = TextConfig::is_full_attention(layer);
@@ -145,11 +164,21 @@ std::int32_t execute_chunk(const ModelWeights& weights, HeterogeneousKVCache& ca
         ops::rmsnorm(hidden, layer_weights.input_norm, TextConfig::rms_epsilon, false,
                      normalized, stream);
         ops::linear(normalized, layer_weights.attention.input, packed, stream);
+        if (!dump_directory.empty() && layer == 0) {
+            write_bf16(dump_directory, "persistent_layer0_normalized", normalized);
+            write_bf16(dump_directory, "persistent_layer0_packed", packed);
+        }
         prepare_qkv(packed, layer_weights.attention.query_norm,
                     layer_weights.attention.key_norm, head_dim, kv_heads,
                     full ? TextConfig::full_rope_theta : TextConfig::sliding_rope_theta,
                     full ? TextConfig::full_rotary_active_dim / 2 : head_dim / 2,
                     static_cast<std::int32_t>(first), query, key, value, stream);
+        if (!dump_directory.empty() && (layer == 0 || layer == 5)) {
+            const std::string prefix = "persistent_layer" + std::to_string(layer);
+            write_bf16(dump_directory, prefix + "_q", query);
+            write_bf16(dump_directory, prefix + "_k", key);
+            write_bf16(dump_directory, prefix + "_v", value);
+        }
 
         const TextKvLayerAddress address = text_kv_layer_address(static_cast<std::uint32_t>(layer));
         PagedKVLayerView view = layer_cache(transaction, address, head_dim, kv_heads);
@@ -163,6 +192,10 @@ std::int32_t execute_chunk(const ModelWeights& weights, HeterogeneousKVCache& ca
             ops::causal_sliding_softmax_attention(
                 query, key, value, positions, kSlidingGeometry, TextConfig::sliding_window, 1.0F,
                 view, attended, stream);
+        }
+        if (!dump_directory.empty() && (layer == 0 || layer == 5)) {
+            write_bf16(dump_directory, "persistent_layer" + std::to_string(layer) +
+                                           "_attention_output", attended);
         }
 
         ops::linear(attended.view({q_rows, tokens}), layer_weights.attention.output,
@@ -180,6 +213,8 @@ std::int32_t execute_chunk(const ModelWeights& weights, HeterogeneousKVCache& ca
         ops::rmsnorm(feedforward, layer_weights.post_feedforward_norm,
                      TextConfig::rms_epsilon, false, post, stream);
         add_scaled(post, layer_weights.layer_scalar, hidden, stream);
+        write_bf16(dump_directory, "persistent_layer" + std::to_string(layer) + "_output",
+                   hidden);
     }
     transaction.commit(stream);
 
@@ -202,13 +237,25 @@ std::int32_t execute_chunk(const ModelWeights& weights, HeterogeneousKVCache& ca
 
 PersistentRunResult run_persistent_target(const std::filesystem::path& artifact_path,
                                           const PersistentRunOptions& options) {
+    const std::uint32_t prefill_tokens = options.input_tokens.empty()
+                                             ? options.prefill_tokens
+                                             : static_cast<std::uint32_t>(options.input_tokens.size());
+    const std::uint32_t appended_tokens = options.generation_tokens > 0
+                                              ? options.generation_tokens - 1
+                                              : static_cast<std::uint32_t>(options.run_deep_decode);
     if (options.maximum_context < TextConfig::sliding_window ||
         options.maximum_context > TextConfig::maximum_position ||
-        options.prefill_tokens == 0 || options.chunk_tokens == 0 || options.chunk_tokens > 64 ||
-        options.prefill_tokens + (options.run_deep_decode ? 1U : 0U) > options.maximum_context ||
+        prefill_tokens == 0 || options.chunk_tokens == 0 || options.chunk_tokens > 64 ||
+        prefill_tokens + appended_tokens > options.maximum_context ||
+        (options.generation_tokens > 0 && options.run_deep_decode) ||
         options.input_token < 0 ||
         options.input_token >= static_cast<std::int32_t>(TextConfig::vocabulary)) {
         throw std::invalid_argument("Gemma persistent target options are invalid");
+    }
+    if (std::any_of(options.input_tokens.begin(), options.input_tokens.end(), [](std::int32_t token) {
+            return token < 0 || token >= static_cast<std::int32_t>(TextConfig::vocabulary);
+        })) {
+        throw std::invalid_argument("Gemma persistent target input token is invalid");
     }
 
     DeviceContext device(options.device_id);
@@ -218,6 +265,9 @@ PersistentRunResult run_persistent_target(const std::filesystem::path& artifact_
     artifact::MaterializedArtifact materialized =
         artifact::materialize(reader, plan.materialization, device);
     const ModelWeights weights = load_weights(materialized, plan.bindings);
+    if (!options.dump_directory.empty()) {
+        std::filesystem::create_directories(options.dump_directory);
+    }
 
     PersistentRunResult result;
     result.weights_bytes = materialized.stats().device_capacity_bytes;
@@ -255,24 +305,47 @@ PersistentRunResult run_persistent_target(const std::filesystem::path& artifact_
     EventPair timer;
     timer.start(device.stream);
     std::uint32_t first = 0;
-    while (first < options.prefill_tokens) {
+    while (first < prefill_tokens) {
         const std::int32_t count = static_cast<std::int32_t>(std::min(
-            options.chunk_tokens, options.prefill_tokens - first));
-        const bool produce_logits = !options.run_deep_decode &&
+            options.chunk_tokens, prefill_tokens - first));
+        const bool produce_logits = (options.generation_tokens > 0 || !options.run_deep_decode) &&
                                     first + static_cast<std::uint32_t>(count) ==
-                                        options.prefill_tokens;
+                                        prefill_tokens;
+        std::vector<std::int32_t> repeated_tokens;
+        std::span<const std::int32_t> chunk;
+        if (options.input_tokens.empty()) {
+            repeated_tokens.assign(static_cast<std::size_t>(count), options.input_token);
+            chunk = repeated_tokens;
+        } else {
+            chunk = std::span<const std::int32_t>(options.input_tokens).subspan(first, count);
+        }
         const std::int32_t greedy = execute_chunk(
-            weights, cache, first, count, options.input_token, activations,
-            attention_workspace, device.stream, produce_logits);
+            weights, cache, first, chunk, activations, attention_workspace, device.stream,
+            produce_logits,
+            produce_logits ? options.dump_directory : std::filesystem::path{});
         if (produce_logits) result.greedy_token = greedy;
         first += static_cast<std::uint32_t>(count);
     }
     result.prefill_milliseconds = timer.stop(device.stream);
 
-    if (options.run_deep_decode) {
+    if (options.generation_tokens > 0) {
+        result.generated_tokens.push_back(result.greedy_token);
         timer.start(device.stream);
-        result.greedy_token = execute_chunk(weights, cache, first, 1, options.input_token,
-                                            activations, attention_workspace, device.stream, true);
+        while (result.generated_tokens.size() < options.generation_tokens) {
+            const std::int32_t token = result.generated_tokens.back();
+            result.greedy_token = execute_chunk(weights, cache, first,
+                                                 std::span<const std::int32_t>(&token, 1),
+                                                 activations, attention_workspace,
+                                                 device.stream, true);
+            result.generated_tokens.push_back(result.greedy_token);
+            ++first;
+        }
+        result.decode_milliseconds = timer.stop(device.stream);
+    } else if (options.run_deep_decode) {
+        timer.start(device.stream);
+        result.greedy_token = execute_chunk(
+            weights, cache, first, std::span<const std::int32_t>(&options.input_token, 1),
+            activations, attention_workspace, device.stream, true);
         result.decode_milliseconds = timer.stop(device.stream);
     }
     result.final_frontier = cache.frontier(0);
