@@ -28,7 +28,7 @@
 
 namespace ninfer::bench {
 
-constexpr double kRooflineGBs = 1792.0; // RTX 5090 GDDR7 bandwidth roofline.
+constexpr double kRooflineGBs = 1008.0; // RTX 4090 GDDR6X bandwidth roofline.
 
 inline std::uint16_t f32_to_bf16(float f) {
     std::uint32_t u;
@@ -56,7 +56,7 @@ inline DeviceBuffer make_zeros(std::size_t bytes) {
 
 // cudaDeviceProp memory-clock fields were removed in CUDA 13; the in-process
 // GB/s is informational anyway (ncu is the acceptance gate), so report against
-// the known RTX 5090 roofline constant.
+// the known RTX 4090 roofline constant.
 inline double device_peak_bw_gbs(int /*dev*/ = 0) { return kRooflineGBs; }
 
 struct ColdTiming {
