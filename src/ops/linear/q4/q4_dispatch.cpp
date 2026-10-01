@@ -7,6 +7,17 @@ namespace ninfer::ops::detail {
 Q4Launch select_q4_a16_launch(std::int32_t n, std::int32_t k, std::int32_t t) {
     if (t <= 0) { throw std::invalid_argument("q4 linear: unsupported shape or T"); }
 
+    // Gemma 4 31B text matrices. The row-split kernels are geometry-generic; keep the
+    // registered surface explicit while using the conservative A16 schedule until the
+    // target-specific tuning phases select measured routes.
+    const bool gemma4 =
+        (k == 5376 && (n == 16384 || n == 18432 || n == 43008)) ||
+        (n == 5376 && (k == 8192 || k == 16384 || k == 21504));
+    if (gemma4) {
+        if (t == 1) { return launch_q4_gemv_r1_w8_direct; }
+        return launch_q4_mma_r64_c128;
+    }
+
     switch (k) {
     case 5120:
         switch (n) {

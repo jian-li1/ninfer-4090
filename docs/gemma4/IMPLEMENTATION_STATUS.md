@@ -22,8 +22,8 @@ commit that completes each phase.
 | 0 | complete | Baseline environment, full test suites, and Qwen3.8 public-Engine smoke recorded |
 | 1 | complete | Immutable sources, compact semantic fixtures, real target logits, and assistant MTP1 |
 | 2 | complete | Compile-time family/target packages, exact schedule, capabilities, and registry identity |
-| 3 | pending | `.ninfer` converter and exact binder |
-| 4 | pending | Reference-correct short-context execution |
+| 3 | complete | Reproducible `.ninfer` converter, closed binder, and 15.806 GiB target residency |
+| 4 | complete | Reference-correct C++/CUDA short-context execution and first-divergence parity |
 | 5 | pending | Heterogeneous physical KV groups |
 | 6 | pending | E8 codecs for D256 and D512 |
 | 7 | pending | Optimized D256 sliding attention |
@@ -123,11 +123,32 @@ Phase 0 full-suite result remains the regression baseline; all Phase 2 affected 
 - Ten affected Python converter/numeric tests passed. Both affected C++ tests passed, including the
   closed synthetic 15.806 GiB load plan; the C++ reader/binder also accepted the real artifact.
 
+## Phase 4 record
+
+- Added a target-owned correctness-first C++/CUDA execution route for 1–4096 token prefixes. It
+  executes the complete 60-layer schedule over the registered `.ninfer` artifact without a Python
+  model-inference path or multimodal residency.
+- The implementation covers direct-gain RMSNorm, BF16 embedding scaling, full and proportional
+  RoPE, unscaled grouped-query causal attention, the global K-as-V rule with distinct K/V norms,
+  dense tanh-GELU MLPs, learned layer scalars, tied FP8 output projection, and pre-selection logit
+  softcap.
+- The route uses transient BF16 current-prefix K/V and owns no persistent cache allocation. It is
+  therefore compatible with the inherited persistent-cache contracts while Phase 5 introduces
+  heterogeneous physical cache groups.
+- The pinned six-token real-checkpoint prompt produced reference greedy token `100`. All 25
+  exported substages passed the production-artifact gate: worst relative L2 0.290551, minimum
+  cosine 0.959352, and no first divergence. Layer-0 and layer-5 output cosines were 0.999469 and
+  0.999482 respectively; final-logit cosine was 0.994011.
+- The T=1 path also completed on the real artifact. The Gemma C++ suite passed 3/3, and the
+  affected shared embedding and Q4 oracle tests passed 2/2 on the RTX 4090/CUDA 13.1 toolchain.
+- The dump comparator reports stage ownership, checksums, max/mean absolute error, relative L2,
+  cosine similarity, selected slices, first divergence, and greedy-token equality.
+
 ## Open blockers and limitations
 
 - The generated artifact remains local under `/dev/shm`; publication is a later product phase.
-- Phase 4 still needs executable Gemma Ops and short-context numerical parity before the artifact
-  can serve inference.
+- The correctness route is not yet published through `ninfer::Engine`; product integration remains
+  Phase 15, after heterogeneous cache, long-context, graph, and MTP work.
 - Full-checkpoint fixture regeneration requires restaging the two immutable source checkpoints;
   they are intentionally not committed to this repository.
 - The repository-documented Python 3.11 interpreter path is absent on this machine. The isolated

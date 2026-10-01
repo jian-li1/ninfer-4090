@@ -63,8 +63,10 @@ enum class LinearPolicy : std::uint8_t {
  * [34816,5120], [248320,5120], [5120,6144], [5120,17408]}` at every positive T. The current NVFP4
  * problems register the five non-vocabulary FP8 geometries and accept every positive T. W8 also
  * registers `[5120,25600]` at every positive T. BF16_CTRL registers `[14336,5120]`,
- * `[5120,6144]`, and `[256,5120]` at every positive T. Text and MTP packed-weight problems accept
- * every positive column extent T. Registered Vision problems accept raw-patch P in
+ * `[5120,6144]`, and `[256,5120]` at every positive T. Gemma 4 Q4 registers `[16384,5376]`,
+ * `[18432,5376]`, `[43008,5376]`, `[5376,8192]`, `[5376,16384]`, and `[5376,21504]` at every
+ * positive T using the correctness-first A16 route. Other text and MTP packed-weight problems
+ * accept every positive column extent T. Registered Vision problems accept raw-patch P in
  * `{4,8,...,131072}` or merged-token V in `[1,32768]`; a matrix column does not inherently
  * represent a text token. FP32_CTRL is unsupported.
  *

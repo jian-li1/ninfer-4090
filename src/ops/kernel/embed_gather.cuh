@@ -54,6 +54,22 @@ __launch_bounds__(Threads) __global__
     }
 }
 
+__global__ void embed_gather_fp8_generic_kernel(
+    const std::int32_t* ids, const std::uint8_t* codes, const __nv_bfloat16* scales,
+    __nv_bfloat16* out, std::int32_t d, std::int32_t tokens) {
+    const std::int64_t count = static_cast<std::int64_t>(d) * tokens;
+    const std::int64_t start = static_cast<std::int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    const std::int64_t stride = static_cast<std::int64_t>(gridDim.x) * blockDim.x;
+    for (std::int64_t index = start; index < count; index += stride) {
+        const std::int32_t token = static_cast<std::int32_t>(index / d);
+        const std::int32_t column = static_cast<std::int32_t>(index - static_cast<std::int64_t>(token) * d);
+        const std::int32_t row = ids[token];
+        const __nv_fp8_e4m3 code = *reinterpret_cast<const __nv_fp8_e4m3*>(
+            codes + static_cast<std::int64_t>(row) * d + column);
+        out[index] = __float2bfloat16(static_cast<float>(code) * __bfloat162float(scales[row]));
+    }
+}
+
 __device__ __forceinline__ int unpack_q6_code(const std::uint8_t* nibble, const std::uint8_t* high,
                                               int index) {
     const std::uint8_t low_byte   = nibble[index >> 1];

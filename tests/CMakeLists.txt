@@ -193,6 +193,14 @@ if(NINFER_BUILD_GEMMA4_31B_IT)
     ${PROJECT_SOURCE_DIR}/src/targets/gemma4/export
     ${PROJECT_SOURCE_DIR}/src/targets/gemma4_31b_it/export
     ${PROJECT_SOURCE_DIR}/src/targets/gemma4_31b_it/impl)
+  ninfer_add_test(ninfer_gemma4_31b_it_reference
+    SOURCES targets/gemma4_31b_it/reference_main.cpp
+    LIBRARIES ninfer_engine)
+  target_include_directories(ninfer_gemma4_31b_it_reference PRIVATE
+    ${PROJECT_SOURCE_DIR}/src/targets/gemma4/export
+    ${PROJECT_SOURCE_DIR}/src/targets/gemma4_31b_it/export
+    ${PROJECT_SOURCE_DIR}/src/targets/gemma4_31b_it/impl)
+  set_tests_properties(ninfer_gemma4_31b_it_reference PROPERTIES SKIP_RETURN_CODE 77)
 endif()
 
 # Product protocol contracts.

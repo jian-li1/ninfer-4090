@@ -151,10 +151,22 @@ void embed_gather_w8_launch(const Tensor& ids, const Weight& table, Tensor& out,
 void embed_gather_fp8_launch(const Tensor& ids, const Weight& table, Tensor& out,
                              cudaStream_t stream) {
     const std::int32_t T = ids.ne[0];
-    if (T <= 176)
-        launch_fp8<10, 128>(ids, table, out, stream);
-    else
-        launch_fp8<5, 128>(ids, table, out, stream);
+    if (out.ne[0] == kEmbedGatherFp8D) {
+        if (T <= 176)
+            launch_fp8<10, 128>(ids, table, out, stream);
+        else
+            launch_fp8<5, 128>(ids, table, out, stream);
+    } else {
+        constexpr int block = 256;
+        const std::int64_t count = static_cast<std::int64_t>(out.ne[0]) * T;
+        const int grid = static_cast<int>(std::min<std::int64_t>(
+            16384, std::max<std::int64_t>(1, div_up(count, static_cast<std::int64_t>(block)))));
+        embed_gather_fp8_generic_kernel<<<grid, block, 0, stream>>>(
+            static_cast<const std::int32_t*>(ids.data),
+            static_cast<const std::uint8_t*>(table.qdata),
+            static_cast<const __nv_bfloat16*>(table.scales),
+            static_cast<__nv_bfloat16*>(out.data), out.ne[0], T);
+    }
     CUDA_CHECK(cudaGetLastError());
 }
 
