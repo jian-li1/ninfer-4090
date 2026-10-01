@@ -61,7 +61,8 @@ Each decoder layer performs:
 7. post-feedforward RMSNorm;
 8. second residual add.
 
-There are no per-layer embeddings or MoE blocks in this target. The upstream layer scalar is one.
+There are no per-layer embeddings or MoE blocks in this target. Each completed layer is multiplied
+by its learned BF16 scalar; conversion retains all 60 scalars as explicit artifact tensors.
 
 ### RoPE
 

@@ -32,7 +32,6 @@ struct TextConfig {
     static constexpr float attention_scale                 = 1.0F;
     static constexpr float final_logit_softcap             = 30.0F;
     static constexpr float embedding_scale_bf16            = 73.5F;
-    static constexpr float layer_scale                     = 1.0F;
     static constexpr std::uint32_t quantization_bits       = 4;
     static constexpr std::uint32_t quantization_group      = 32;
     static constexpr bool tied_embeddings                  = true;

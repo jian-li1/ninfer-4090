@@ -186,6 +186,13 @@ if(NINFER_BUILD_GEMMA4_31B_IT)
   target_include_directories(ninfer_gemma4_31b_it_config_test PRIVATE
     ${PROJECT_SOURCE_DIR}/src/targets/gemma4/export
     ${PROJECT_SOURCE_DIR}/src/targets/gemma4_31b_it/export)
+  ninfer_add_test(ninfer_gemma4_31b_it_artifact_bindings_test
+    SOURCES targets/gemma4_31b_it/test_artifact_bindings.cpp
+    LIBRARIES ninfer_engine)
+  target_include_directories(ninfer_gemma4_31b_it_artifact_bindings_test PRIVATE
+    ${PROJECT_SOURCE_DIR}/src/targets/gemma4/export
+    ${PROJECT_SOURCE_DIR}/src/targets/gemma4_31b_it/export
+    ${PROJECT_SOURCE_DIR}/src/targets/gemma4_31b_it/impl)
 endif()
 
 # Product protocol contracts.

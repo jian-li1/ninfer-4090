@@ -10,16 +10,13 @@
 namespace ninfer::targets::gemma4 {
 
 struct MlpWeights {
-    Weight gate;
-    Weight up;
+    Weight gate_up;
     Weight down;
 };
 
 struct AttentionWeights {
-    Weight query;
-    Weight key;
-    // Full-attention layers omit this view: their projected K source also supplies V.
-    std::optional<Weight> value;
+    // Sliding layers store Q/K/V rows; full layers store Q/K because K also supplies V.
+    Weight input_projection;
     Weight output;
     Tensor query_norm;
     Tensor key_norm;
@@ -32,6 +29,7 @@ struct DecoderLayerView {
     Tensor pre_feedforward_norm;
     MlpWeights mlp;
     Tensor post_feedforward_norm;
+    Tensor layer_scalar;
 };
 
 struct AssistantAttentionWeights {
@@ -47,6 +45,7 @@ struct AssistantLayerView {
     Tensor pre_feedforward_norm;
     MlpWeights mlp;
     Tensor post_feedforward_norm;
+    Tensor layer_scalar;
     std::uint32_t target_kv_layer = 0;
 };
 

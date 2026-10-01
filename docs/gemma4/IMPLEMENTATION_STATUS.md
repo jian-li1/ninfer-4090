@@ -101,9 +101,33 @@ The optional all-target rebuild could not finish because the root filesystem exh
 2.1 GiB while linking unrelated test executables, even after reducing the build to two jobs. The
 Phase 0 full-suite result remains the regression baseline; all Phase 2 affected targets passed.
 
+## Phase 3 record
+
+- Added the reproducible container-v2 converter for the exact pinned target and optional assistant.
+  It validates checkpoint SHA-256, config, compressed-tensors group-32 semantics, complete source
+  classification, learned layer scalars, resources, and every materialized signature before write.
+- The target inventory has 662 device tensors and four host resources. The tied output head aliases
+  the row-scaled FP8 embedding; Q/K/V and gate/up are row-fused; source INT4 group-32 linears are
+  decoded and requantized to the existing Q4G64 persistent format.
+- Exactly 356 multimodal source tensors are deliberately omitted. Unknown source tensors, artifact
+  extras, missing objects, and malformed tensor signatures fail closed.
+- The optional 44-tensor assistant is packaged in W8/FP8/BF16 form and fully validated, but remains
+  nonresident until the MTP execution phase.
+- Target device residency is 16,971,062,784 bytes (15.806 GiB), below the 17.5 GiB planning
+  checkpoint. The assistant package adds 482,629,120 artifact bytes without Phase 3 residency.
+- The locally generated target-plus-assistant artifact has 710 objects, 17,485,998,848 file bytes,
+  and SHA-256 `11d70c73f940930035516113a4b1cc25c685111692c4e9f2b345b430234ec83a`.
+  All 710 per-object hashes were independently verified after reopening the artifact.
+- Representative matrices measured maximum relative L2 0.098805 and minimum cosine similarity
+  0.995299. The FP8 embedding sample measured relative L2 0.025692 and cosine 0.999670.
+- Ten affected Python converter/numeric tests passed. Both affected C++ tests passed, including the
+  closed synthetic 15.806 GiB load plan; the C++ reader/binder also accepted the real artifact.
+
 ## Open blockers and limitations
 
-- No Gemma artifact exists yet, so Gemma memory and performance measurements begin in later phases.
+- The generated artifact remains local under `/dev/shm`; publication is a later product phase.
+- Phase 4 still needs executable Gemma Ops and short-context numerical parity before the artifact
+  can serve inference.
 - Full-checkpoint fixture regeneration requires restaging the two immutable source checkpoints;
   they are intentionally not committed to this repository.
 - The repository-documented Python 3.11 interpreter path is absent on this machine. The isolated
