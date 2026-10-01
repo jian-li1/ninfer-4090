@@ -22,11 +22,19 @@ scalar. The final vocabulary projection reuses the FP8 embedding object and appl
 
 ## Short-context state and persistent-cache compatibility
 
-This correctness route materializes each layer's current prefix K/V in transient BF16 storage and
-reruns the bounded prefix. It owns no persistent KV allocation and therefore cannot alias, mutate,
-or bypass the persistent cache inherited from `feat/persist-kv-cache`. Phase 5 replaces this
-transient representation with target-neutral heterogeneous physical cache groups; the mathematical
-layer schedule and parity route remain the oracle for that transition.
+The Phase 4 correctness route still materializes each layer's current prefix K/V in transient BF16
+storage and reruns the bounded prefix. Phase 5 added the persistent representation used by the
+optimized execution route: a 50-layer D256/H16 modulo-17 sliding group and a 10-layer D512/H4
+full-history group. Both use the target-neutral grouped transaction layer over the same physical
+page primitives as the inherited Qwen persistent cache. The mathematical prefix route remains the
+oracle until the Phase 7/8 attention leaves consume these views.
+
+Group transactions expose stable staging block tables, copy a partial tail before mutation, and
+atomically advance both groups. Reject leaves committed mappings untouched. Checkpoints clone both
+group payloads and can restore a wrapped local position into either lane before appending. At 32K,
+the local group remains 16–17 resident page groups while the global group reaches 512. The current
+BF16 one-lane/2048-token-transaction plan reserves 5,315,870,720 payload bytes; Phase 6 replaces
+those planes with the selected E8 profile before deep-context production execution.
 
 At 4096 tokens the conservative transient workspace estimate is below 1.5 GiB. Together with the
 15.806 GiB resident target weights, the Phase 4 route remains within a 24 GiB RTX 4090 planning

@@ -24,7 +24,7 @@ commit that completes each phase.
 | 2 | complete | Compile-time family/target packages, exact schedule, capabilities, and registry identity |
 | 3 | complete | Reproducible `.ninfer` converter, closed binder, and 15.806 GiB target residency |
 | 4 | complete | Reference-correct C++/CUDA short-context execution and first-divergence parity |
-| 5 | pending | Heterogeneous physical KV groups |
+| 5 | complete | Atomic heterogeneous local/global KV groups qualified through 32K |
 | 6 | pending | E8 codecs for D256 and D512 |
 | 7 | pending | Optimized D256 sliding attention |
 | 8 | pending | Optimized D512 global attention |
@@ -143,6 +143,28 @@ Phase 0 full-suite result remains the regression baseline; all Phase 2 affected 
   affected shared embedding and Q4 oracle tests passed 2/2 on the RTX 4090/CUDA 13.1 toolchain.
 - The dump comparator reports stage ownership, checksums, max/mean absolute error, relative L2,
   cosine similarity, selected slices, first divergence, and greedy-token equality.
+
+## Phase 5 record
+
+- Added target-neutral heterogeneous KV planning and runtime ownership over the existing physical
+  page primitives. Groups own independent geometry/capacity while every sequence has one atomic
+  frontier across reserve, partial-tail COW, commit, rollback, checkpoint, and restore.
+- Committed and transaction block-table matrices plus `[visible_begin, frontier]` device state have
+  Engine-lifetime-stable addresses for CUDA Graph consumers. Append writes use a staging table;
+  rejected transactions never publish provisional pages through the committed mapping.
+- The exact Gemma target plan maps 50 sliding layers to Hkv=16/D256 and 10 global layers to
+  Hkv=4/D512. The local group uses a 17-slot modulo ring for the 1024-token window; the global group
+  uses `ceil(max_context/64)` logical pages and an aggregate resident-token budget.
+- Versioned group descriptors round-trip retention, layer count, logical limits, page order, and
+  every data/scale plane. This is the descriptor primitive required by the later persistent
+  continuation phase; existing disk snapshot publication is not broadened yet.
+- RTX 4090/CUDA 13.1 device tests passed tail payload COW/reject, 1023→1024→1025 boundaries,
+  multiple wraps, destructor rollback across a wrap, wrapped prefix payload restore, append after
+  restore, cross-lane restore/isolation, stable device pointers/state, and 32K progression. Local
+  residency stayed at 16–17 page groups while global residency grew to 512.
+- The existing physical KV suite and Qwen runtime/state/cache regressions remain green. The Phase 4
+  prefix oracle remains transient until the optimized local/global attention leaves in Phases 7–8
+  consume the new cache views.
 
 ## Open blockers and limitations
 

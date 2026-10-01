@@ -16,7 +16,8 @@ request、source 或 victim。
 
 ## 1. 物理模型
 
-Growing KV 使用一组启动时固定的 homogeneous pools。每个 pool：
+Growing KV 使用一组启动时固定的 pools；每个 pool 自身 homogeneous，但一个 target sequence 可以由
+多个 geometry 不同的 pool group 共同表示。每个 pool：
 
 - 存储具有同一 frontier 和 lifetime 的全部 planes；
 - 使用固定的 token page size、plane order 和 page-group count；
@@ -178,7 +179,38 @@ MTP 的额外 pages 只覆盖每条 active row 在一个 speculative round 中�
 各 pools 物理分离。一个 pool 的 free page 不能变成另一 pool 的 payload。Program 在启动时一次性建立
 完整 typed capacity vector，运行期不扩容或重分 pool geometry。
 
-### 3.5 Host capacity
+### 3.5 Heterogeneous target groups
+
+`KvGroupSpec` 是 core 对 heterogeneous target 的 closed physical contract。每个 group 独立声明
+retention、layer/plane inventory、per-sequence logical ceiling、physical page-group capacity 和 stable
+execution-table rows；core 不解释 model layer schedule。`HeterogeneousKVCache` 对同一 sequence 的全部
+groups 建立一个共同 committed frontier，并将 reserve、partial-tail COW、commit、rollback、checkpoint
+和 restore 作为跨 groups 的单一 transaction 执行。
+
+Gemma 4 31B text target 展开为两个 groups：
+
+| group | layers | geometry | retention | block-table capacity |
+|---|---:|---|---|---:|
+| Sliding | 50 | Hkv=16, D=256 | last 1024 tokens | 17 pages |
+| Global | 10 | Hkv=4, D=512 | full history | `ceil(max_context/64)` |
+
+Sliding 使用 17 个 table slots，而不是 16：frontier 未 page-align 时，1024-token visible interval 会同时
+覆盖最老和最新两个 partial pages。Logical block 以 modulo-17 映射，过期 page 在 commit 时释放，因此
+steady-state payload 为 16 或 17 page groups，与 absolute position 无关。Global group 保留普通 logical
+block index 并随 context 增长。两组 physical ID namespace、page bytes 和 capacity 相互独立。
+
+每个 group/row 有 Engine-lifetime-stable committed 和 transaction block table。Transaction table 先从
+committed table device-copy，并把新 pages 与 partial-tail COW destination 发布到 stable staging pointer；
+append Ops 只写 staging mapping。Commit 将全部 group mappings 与 `[visible_begin, frontier]` device state
+一起发布；rollback 释放 staged pages，committed table 从未指向 provisional payload。这同时满足 speculative
+reject 和 CUDA Graph pointer stability。Batch consumers 取得 stable table/state matrices，不持有 allocator。
+
+Continuation header 使用 versioned `encode_kv_group_descriptors` representation 记录 group id、retention、
+layer count、logical limits 和完整 physical plane geometry。Restore 必须在 materialization 前 exact-compare
+descriptor；descriptor codec 不等同于 continuation publication。Gemma disk/session persistence 仍由后续的
+target continuation phase 接入现有 snapshot contract。
+
+### 3.6 Host capacity
 
 Main 与 selected backend 的 Host replicas共用一个 startup-fixed pinned `HostKVArena`，但每个 allocation
 携带自己的 typed page layout。Host capacity 按实际 packed bytes 和 allocator extent geometry计费；

@@ -95,6 +95,13 @@ target_include_directories(ninfer_cli_options_test PRIVATE ${PROJECT_SOURCE_DIR}
 ninfer_add_test(ninfer_kv_cache_test
   SOURCES test_kv_cache.cpp
   LIBRARIES ninfer_core)
+ninfer_add_test(ninfer_heterogeneous_kv_cache_test
+  SOURCES test_heterogeneous_kv_cache.cpp
+  LIBRARIES ninfer_engine ninfer_core)
+target_include_directories(ninfer_heterogeneous_kv_cache_test PRIVATE
+  ${PROJECT_SOURCE_DIR}/src/targets/gemma4/export
+  ${PROJECT_SOURCE_DIR}/src/targets/gemma4_31b_it/export
+  ${PROJECT_SOURCE_DIR}/src/targets/gemma4_31b_it/impl)
 ninfer_add_test(ninfer_state_store_test
   SOURCES test_state_store.cpp
   LIBRARIES ninfer_core)
@@ -107,6 +114,7 @@ set_tests_properties(
   ninfer_decode_graph_test
   ninfer_arena_test
   ninfer_kv_cache_test
+  ninfer_heterogeneous_kv_cache_test
   ninfer_state_store_test
   PROPERTIES SKIP_RETURN_CODE 77)
 # Family frontend and one opt-in real-artifact prefix/MTP integration test.
@@ -466,4 +474,3 @@ foreach(test_target IN LISTS ninfer_qwen3_6_27b_internal_tests)
     ${PROJECT_SOURCE_DIR}/src/targets/qwen3_6_27b/export
     ${PROJECT_SOURCE_DIR}/src/targets/qwen3_6/export)
 endforeach()
-
