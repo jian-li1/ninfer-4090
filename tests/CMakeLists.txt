@@ -201,6 +201,13 @@ if(NINFER_BUILD_GEMMA4_31B_IT)
     ${PROJECT_SOURCE_DIR}/src/targets/gemma4/export
     ${PROJECT_SOURCE_DIR}/src/targets/gemma4_31b_it/export
     ${PROJECT_SOURCE_DIR}/src/targets/gemma4_31b_it/impl)
+  ninfer_add_test(ninfer_gemma4_continuation_test
+    SOURCES targets/gemma4_31b_it/test_continuation.cpp
+    LIBRARIES ninfer_engine ninfer_core)
+  target_include_directories(ninfer_gemma4_continuation_test PRIVATE
+    ${PROJECT_SOURCE_DIR}/src/targets/gemma4/export
+    ${PROJECT_SOURCE_DIR}/src/targets/gemma4/impl
+    ${PROJECT_SOURCE_DIR}/src/targets/gemma4_31b_it/export)
   ninfer_add_test(ninfer_gemma4_31b_it_reference
     SOURCES targets/gemma4_31b_it/reference_main.cpp
     LIBRARIES ninfer_engine)

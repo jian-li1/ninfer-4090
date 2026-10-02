@@ -19,6 +19,9 @@ struct PersistentRunOptions {
     bool use_cuda_graph = false;
     bool qualify_graph_transactions = false;
     std::uint32_t mtp_draft_tokens = 0;
+    bool save_continuation = false;
+    std::vector<std::uint8_t> restore_continuation;
+    std::vector<std::uint32_t> continuation_anchors;
     int device_id = 0;
 };
 
@@ -40,6 +43,9 @@ struct PersistentRunResult {
     std::uint32_t final_frontier = 0;
     std::uint32_t graph_capture_count = 0;
     std::uint32_t graph_replay_count = 0;
+    std::uint32_t restored_tokens = 0;
+    std::uint32_t computed_prefill_tokens = 0;
+    std::uint32_t continuation_anchor_count = 0;
     bool graph_transaction_checks_passed = false;
     bool graph_uses_existing_workspace = true;
     std::uint64_t mtp_proposed_tokens = 0;
@@ -50,8 +56,12 @@ struct PersistentRunResult {
     std::vector<std::int32_t> mtp_first_round_drafts;
     std::vector<std::uint64_t> mtp_accepted_per_position;
     std::vector<std::int32_t> generated_tokens;
+    std::vector<std::uint8_t> continuation_snapshot;
+    std::size_t continuation_payload_bytes = 0;
     double prefill_milliseconds = 0.0;
     double decode_milliseconds = 0.0;
+    double continuation_save_milliseconds = 0.0;
+    double continuation_restore_milliseconds = 0.0;
     double assistant_milliseconds = 0.0;
     double proposal_head_milliseconds = 0.0;
     double verify_milliseconds = 0.0;

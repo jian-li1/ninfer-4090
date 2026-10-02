@@ -19,6 +19,7 @@ namespace {
 
 using ninfer::HeterogeneousKVCache;
 using ninfer::HeterogeneousKVCacheLayout;
+using ninfer::HeterogeneousKVHostImage;
 using ninfer::KvGroupRetention;
 using ninfer::KvGroupSpec;
 
@@ -324,6 +325,34 @@ void exercise_device_transactions() {
         commit_to(cache, 1, 8257);
         require(cache.frontier(0) == 8257 && cache.frontier(1) == 8257,
                 "append after cross-lane prefix restore failed");
+
+        const HeterogeneousKVHostImage host_image = cache.export_host(0);
+        CUDA_CHECK(cudaDeviceSynchronize());
+        require(host_image.groups.size() == 2 &&
+                    host_image.groups[0].logical_blocks.front() == 113 &&
+                    host_image.groups[0].logical_blocks.back() == 129 &&
+                    host_image.groups[1].logical_blocks.front() == 0 &&
+                    host_image.groups[1].logical_blocks.back() == 129,
+                "wrapped host image did not preserve local/global logical page ranges");
+        commit_to(cache, 1, 10000);
+        cache.import_host(1, host_image);
+        CUDA_CHECK(cudaDeviceSynchronize());
+        const HeterogeneousKVHostImage restored_host_image = cache.export_host(1);
+        CUDA_CHECK(cudaDeviceSynchronize());
+        require(restored_host_image == host_image && cache.frontier(1) == 8257 &&
+                    cache.visible_begin(1, 10) == 7233,
+                "host import did not restore both KV groups byte-exactly");
+
+        HeterogeneousKVHostImage bad_blocks = host_image;
+        ++bad_blocks.groups[0].logical_blocks.front();
+        require_throws<std::invalid_argument>(
+            [&] { cache.import_host(1, bad_blocks); },
+            "host import accepted a stale sliding-ring logical base");
+        HeterogeneousKVHostImage bad_payload = host_image;
+        bad_payload.groups[1].payload.pop_back();
+        require_throws<std::invalid_argument>(
+            [&] { cache.import_host(1, bad_payload); },
+            "host import accepted a truncated global payload");
     }
 
     while (cache.frontier(0) < 32768) {

@@ -8,6 +8,7 @@
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -19,7 +20,8 @@ namespace {
                  "error: %s\nusage: ninfer_gemma4_31b_it_long_context ARTIFACT "
                  "[--max-context N] [--prefill N] [--chunk N] [--token ID] "
                  "[--tokens-file PATH] [--generate N] [--dump PATH] [--cuda-graph] "
-                 "[--qualify-graph-transactions] [--mtp N] [--no-decode]\n",
+                 "[--qualify-graph-transactions] [--mtp N] [--no-decode] "
+                 "[--save-continuation PATH] [--restore-continuation PATH] [--anchor N]\n",
                  message);
     std::exit(2);
 }
@@ -35,6 +37,29 @@ std::vector<std::int32_t> read_tokens(const std::filesystem::path& path) {
     }
     if (!input.eof() || tokens.empty()) usage("invalid or empty --tokens-file");
     return tokens;
+}
+
+std::vector<std::uint8_t> read_continuation(const std::filesystem::path& path) {
+    std::ifstream input(path, std::ios::binary | std::ios::ate);
+    if (!input) usage("cannot open --restore-continuation");
+    const std::streamoff extent = input.tellg();
+    if (extent <= 0 || static_cast<std::uint64_t>(extent) >
+                           std::numeric_limits<std::size_t>::max()) {
+        usage("invalid --restore-continuation file");
+    }
+    std::vector<std::uint8_t> bytes(static_cast<std::size_t>(extent));
+    input.seekg(0);
+    input.read(reinterpret_cast<char*>(bytes.data()), extent);
+    if (!input) usage("cannot read --restore-continuation");
+    return bytes;
+}
+
+void write_continuation(const std::filesystem::path& path,
+                        const std::vector<std::uint8_t>& bytes) {
+    std::ofstream output(path, std::ios::binary | std::ios::trunc);
+    output.write(reinterpret_cast<const char*>(bytes.data()),
+                 static_cast<std::streamsize>(bytes.size()));
+    if (!output) throw std::runtime_error("cannot write --save-continuation");
 }
 
 std::uint32_t parse_u32(const char* value, std::uint32_t minimum, std::uint32_t maximum,
@@ -56,6 +81,8 @@ int main(int argc, char** argv) {
     ninfer::targets::gemma4_31b_it::detail::PersistentRunOptions options;
     bool prefill_set = false;
     std::filesystem::path tokens_file;
+    std::filesystem::path save_continuation;
+    std::filesystem::path restore_continuation;
     for (int index = 2; index < argc; ++index) {
         const std::string_view argument(argv[index]);
         const auto next = [&](const char* flag) {
@@ -88,6 +115,14 @@ int main(int argc, char** argv) {
             options.mtp_draft_tokens = parse_u32(next("--mtp"), 1, 6, "--mtp");
         } else if (argument == "--no-decode") {
             options.run_deep_decode = false;
+        } else if (argument == "--save-continuation") {
+            save_continuation = next("--save-continuation");
+            options.save_continuation = true;
+        } else if (argument == "--restore-continuation") {
+            restore_continuation = next("--restore-continuation");
+        } else if (argument == "--anchor") {
+            options.continuation_anchors.push_back(
+                parse_u32(next("--anchor"), 1, 262143, "--anchor"));
         } else {
             usage("unknown argument");
         }
@@ -101,9 +136,18 @@ int main(int argc, char** argv) {
     } else if (!prefill_set) {
         options.prefill_tokens = options.maximum_context - 1;
     }
+    if (!save_continuation.empty() && !restore_continuation.empty()) {
+        usage("cannot save and restore a continuation in one run");
+    }
+    if (!restore_continuation.empty()) {
+        options.restore_continuation = read_continuation(restore_continuation);
+    }
     try {
         const auto result =
             ninfer::targets::gemma4_31b_it::detail::run_persistent_target(artifact, options);
+        if (!save_continuation.empty()) {
+            write_continuation(save_continuation, result.continuation_snapshot);
+        }
         std::printf(
             "GEMMA4_LONG_CONTEXT max_context=%u frontier=%u weights=%zu kv_payload=%zu "
             "kv_metadata=%zu workspace=%zu free_weights=%zu free_cache=%zu free_workspace=%zu "
@@ -113,7 +157,9 @@ int main(int argc, char** argv) {
             "mtp_width=%u mtp_rounds=%llu mtp_proposed=%llu mtp_accepted=%llu "
             "mtp_first_draft=%d assistant_ms=%.3f proposal_head_ms=%.3f verify_ms=%.3f "
             "mtp_round_p50_ms=%.3f mtp_round_p95_ms=%.3f "
-            "prefill_ms=%.3f decode_ms=%.3f greedy=%d\n",
+            "restored_tokens=%u computed_prefill_tokens=%u continuation_anchors=%u "
+            "continuation_bytes=%zu continuation_payload=%zu continuation_save_ms=%.3f "
+            "continuation_restore_ms=%.3f prefill_ms=%.3f decode_ms=%.3f greedy=%d\n",
             options.maximum_context, result.final_frontier, result.weights_bytes,
             result.kv_payload_bytes, result.kv_metadata_bytes, result.workspace_bytes,
             result.free_after_weights, result.free_after_cache, result.free_after_workspace,
@@ -130,6 +176,10 @@ int main(int argc, char** argv) {
             result.mtp_first_draft_token, result.assistant_milliseconds,
             result.proposal_head_milliseconds, result.verify_milliseconds,
             result.mtp_round_p50_milliseconds, result.mtp_round_p95_milliseconds,
+            result.restored_tokens, result.computed_prefill_tokens,
+            result.continuation_anchor_count, result.continuation_snapshot.size(),
+            result.continuation_payload_bytes, result.continuation_save_milliseconds,
+            result.continuation_restore_milliseconds,
             result.prefill_milliseconds, result.decode_milliseconds, result.greedy_token);
         if (!result.generated_tokens.empty()) {
             std::printf("GEMMA4_GENERATED_IDS=");

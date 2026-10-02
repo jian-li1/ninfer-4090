@@ -5,6 +5,7 @@
 #include <cstdlib>
 #include <exception>
 #include <iostream>
+#include <utility>
 #include <vector>
 
 int main() {
@@ -150,6 +151,53 @@ int main() {
                 std::cerr << ' ' << token;
             }
             std::cerr << '\n';
+            return 1;
+        }
+
+        options.maximum_context = 2048;
+        options.input_tokens.resize(1153);
+        for (std::size_t index = 0; index < options.input_tokens.size(); ++index) {
+            options.input_tokens[index] = varied_ids[index % varied_ids.size()];
+        }
+        options.chunk_tokens = 64;
+        options.generation_tokens = 4;
+        options.use_cuda_graph = true;
+        options.qualify_graph_transactions = false;
+        options.mtp_draft_tokens = 0;
+        options.save_continuation = true;
+        options.continuation_anchors = {1089};
+        auto saved = run_persistent_target(artifact, options);
+        if (saved.continuation_snapshot.empty() ||
+            saved.continuation_snapshot.size() <= saved.continuation_payload_bytes ||
+            saved.continuation_anchor_count != 1 || saved.restored_tokens != 0 ||
+            saved.computed_prefill_tokens != options.input_tokens.size()) {
+            std::cerr << "Gemma continuation capture omitted heterogeneous state\n";
+            return 1;
+        }
+
+        options.save_continuation = false;
+        options.continuation_anchors.clear();
+        options.restore_continuation = std::move(saved.continuation_snapshot);
+        const auto exact_restore = run_persistent_target(artifact, options);
+        if (exact_restore.generated_tokens != saved.generated_tokens ||
+            exact_restore.final_frontier != saved.final_frontier ||
+            exact_restore.restored_tokens != 1152 ||
+            exact_restore.computed_prefill_tokens != 1) {
+            std::cerr << "Gemma endpoint restore changed output or re-prefilled its prefix\n";
+            return 1;
+        }
+
+        auto snapshot = std::move(options.restore_continuation);
+        options.input_tokens[1100] = 2;
+        options.restore_continuation.clear();
+        const auto edited_cold = run_persistent_target(artifact, options);
+        options.restore_continuation = std::move(snapshot);
+        const auto edited_restore = run_persistent_target(artifact, options);
+        if (edited_restore.generated_tokens != edited_cold.generated_tokens ||
+            edited_restore.final_frontier != edited_cold.final_frontier ||
+            edited_restore.restored_tokens != 1089 ||
+            edited_restore.computed_prefill_tokens != 64) {
+            std::cerr << "Gemma anchor restore reused stale local KV or re-prefilled its prefix\n";
             return 1;
         }
         std::cout << "persistent Gemma target smoke passed\n";

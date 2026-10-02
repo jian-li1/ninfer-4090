@@ -6,6 +6,7 @@
 #include <ninfer/ops/rmsnorm.h>
 #include <ninfer/ops/softmax_attention.h>
 #include <ninfer/targets/gemma4_31b_it/config.h>
+#include <ninfer/targets/gemma4_31b_it/package.h>
 
 #include "artifact/binder.h"
 #include "artifact/materializer.h"
@@ -16,12 +17,14 @@
 #include "core/heterogeneous_kv_cache.h"
 #include "core/layout.h"
 #include "core/paged_kv_storage.h"
+#include "targets/gemma4/impl/runtime/continuation.h"
 #include "targets/gemma4_31b_it/impl/load/bindings.h"
 #include "targets/gemma4_31b_it/impl/runtime/kv_groups.h"
 #include "targets/gemma4_31b_it/impl/runtime/model_weights.h"
 #include "targets/gemma4_31b_it/impl/runtime/reference_kernels.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <fstream>
@@ -39,6 +42,14 @@ constexpr ops::AttentionHeadGeometry kSlidingGeometry{
     TextConfig::sliding_head_dim, TextConfig::query_heads, TextConfig::sliding_kv_heads};
 constexpr ops::AttentionHeadGeometry kFullGeometry{
     TextConfig::full_head_dim, TextConfig::query_heads, TextConfig::full_kv_heads};
+constexpr std::string_view kContinuationModelBinding =
+    "gemma4_31b_it\ngemma4-31b-it\ngroupwise-int";
+
+double elapsed_milliseconds(std::chrono::steady_clock::time_point start) {
+    return std::chrono::duration<double, std::milli>(
+               std::chrono::steady_clock::now() - start)
+        .count();
+}
 
 std::size_t free_device_bytes() {
     std::size_t free = 0;
@@ -718,6 +729,9 @@ PersistentRunResult run_persistent_target(const std::filesystem::path& artifact_
         options.mtp_draft_tokens > AssistantConfig::maximum_draft_size ||
         (use_mtp &&
          (options.generation_tokens < 2 || options.qualify_graph_transactions)) ||
+        (options.save_continuation && !options.restore_continuation.empty()) ||
+        (!options.save_continuation && !options.continuation_anchors.empty()) ||
+        (options.save_continuation && prefill_tokens < 2) ||
         options.input_token < 0 ||
         options.input_token >= static_cast<std::int32_t>(TextConfig::vocabulary)) {
         throw std::invalid_argument("Gemma persistent target options are invalid");
@@ -726,6 +740,22 @@ PersistentRunResult run_persistent_target(const std::filesystem::path& artifact_
             return token < 0 || token >= static_cast<std::int32_t>(TextConfig::vocabulary);
         })) {
         throw std::invalid_argument("Gemma persistent target input token is invalid");
+    }
+    std::vector<std::uint32_t> continuation_anchors = options.continuation_anchors;
+    std::sort(continuation_anchors.begin(), continuation_anchors.end());
+    if (std::adjacent_find(continuation_anchors.begin(), continuation_anchors.end()) !=
+            continuation_anchors.end() ||
+        std::any_of(continuation_anchors.begin(), continuation_anchors.end(),
+                    [prefill_tokens](std::uint32_t anchor) {
+                        return anchor == 0 || anchor >= prefill_tokens - 1;
+                    })) {
+        throw std::invalid_argument("Gemma continuation anchors are invalid");
+    }
+    std::vector<std::int32_t> ledger;
+    if (options.input_tokens.empty()) {
+        ledger.assign(prefill_tokens, options.input_token);
+    } else {
+        ledger = options.input_tokens;
     }
 
     DeviceContext device(options.device_id);
@@ -813,22 +843,45 @@ PersistentRunResult run_persistent_target(const std::filesystem::path& artifact_
     }
 
     EventPair timer;
-    timer.start(device.stream);
     std::uint32_t first = 0;
+    if (!options.restore_continuation.empty()) {
+        const auto restore_start = std::chrono::steady_clock::now();
+        const auto state = targets::gemma4::detail::decode_continuation(
+            options.restore_continuation, kContinuationModelBinding,
+            Package::artifact_compatibility_fingerprint, specs,
+            static_cast<std::int32_t>(TextConfig::vocabulary), kSlidingKvGroup,
+            kGlobalKvGroup);
+        auto selection = targets::gemma4::detail::select_continuation_restore(
+            state, ledger, specs, kSlidingKvGroup, kGlobalKvGroup);
+        if (selection.frontier != 0) {
+            cache.import_host(0, selection.kv, device.stream);
+            CUDA_CHECK(cudaStreamSynchronize(device.stream));
+            first = selection.frontier;
+            result.restored_tokens = first;
+        }
+        result.continuation_restore_milliseconds = elapsed_milliseconds(restore_start);
+    }
+
+    const std::uint32_t endpoint_frontier = options.save_continuation ? prefill_tokens - 1 : 0;
+    std::vector<std::uint32_t> capture_frontiers = continuation_anchors;
+    if (options.save_continuation) capture_frontiers.push_back(endpoint_frontier);
+    std::vector<HeterogeneousKVHostImage> captured_anchors;
+    captured_anchors.reserve(continuation_anchors.size());
+    HeterogeneousKVHostImage captured_endpoint;
+
+    timer.start(device.stream);
     while (first < prefill_tokens) {
-        const std::int32_t count = static_cast<std::int32_t>(std::min(
-            options.chunk_tokens, prefill_tokens - first));
+        std::uint32_t next = std::min(first + options.chunk_tokens, prefill_tokens);
+        if (options.save_continuation) {
+            const auto capture = std::upper_bound(capture_frontiers.begin(),
+                                                  capture_frontiers.end(), first);
+            if (capture != capture_frontiers.end()) next = std::min(next, *capture);
+        }
+        const std::int32_t count = static_cast<std::int32_t>(next - first);
         const bool produce_logits = (options.generation_tokens > 0 || !options.run_deep_decode) &&
                                     first + static_cast<std::uint32_t>(count) ==
                                         prefill_tokens;
-        std::vector<std::int32_t> repeated_tokens;
-        std::span<const std::int32_t> chunk;
-        if (options.input_tokens.empty()) {
-            repeated_tokens.assign(static_cast<std::size_t>(count), options.input_token);
-            chunk = repeated_tokens;
-        } else {
-            chunk = std::span<const std::int32_t>(options.input_tokens).subspan(first, count);
-        }
+        const auto chunk = std::span<const std::int32_t>(ledger).subspan(first, count);
         const std::int32_t greedy = execute_chunk(
             weights, cache, first, chunk, options.maximum_context, activations,
             attention_workspace, device.stream, produce_logits,
@@ -836,8 +889,38 @@ PersistentRunResult run_persistent_target(const std::filesystem::path& artifact_
             produce_logits ? options.dump_directory : std::filesystem::path{});
         if (produce_logits) result.greedy_token = greedy;
         first += static_cast<std::uint32_t>(count);
+        result.computed_prefill_tokens += static_cast<std::uint32_t>(count);
+        if (options.save_continuation &&
+            std::binary_search(capture_frontiers.begin(), capture_frontiers.end(), first)) {
+            const auto save_start = std::chrono::steady_clock::now();
+            HeterogeneousKVHostImage image = cache.export_host(0, device.stream);
+            CUDA_CHECK(cudaStreamSynchronize(device.stream));
+            result.continuation_save_milliseconds += elapsed_milliseconds(save_start);
+            if (first == endpoint_frontier) {
+                captured_endpoint = std::move(image);
+            } else {
+                captured_anchors.push_back(std::move(image));
+            }
+        }
     }
     result.prefill_milliseconds = timer.stop(device.stream);
+
+    if (options.save_continuation) {
+        const auto save_start = std::chrono::steady_clock::now();
+        const auto state = targets::gemma4::detail::make_continuation_state(
+            ledger, std::move(captured_endpoint), std::move(captured_anchors),
+            kSlidingKvGroup, kGlobalKvGroup);
+        result.continuation_payload_bytes = state.endpoint.payload_bytes();
+        for (const auto& anchor : state.anchors) {
+            result.continuation_payload_bytes += anchor.sliding.payload.size();
+        }
+        result.continuation_anchor_count =
+            static_cast<std::uint32_t>(state.anchors.size());
+        result.continuation_snapshot = targets::gemma4::detail::encode_continuation(
+            state, kContinuationModelBinding, Package::artifact_compatibility_fingerprint,
+            specs, kSlidingKvGroup, kGlobalKvGroup);
+        result.continuation_save_milliseconds += elapsed_milliseconds(save_start);
+    }
 
     PersistentDecodeGraph decode_graph;
     PersistentMtpVerifyGraph mtp_verify_graph;

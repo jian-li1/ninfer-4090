@@ -207,8 +207,10 @@ reject 和 CUDA Graph pointer stability。Batch consumers 取得 stable table/st
 
 Continuation header 使用 versioned `encode_kv_group_descriptors` representation 记录 group id、retention、
 layer count、logical limits 和完整 physical plane geometry。Restore 必须在 materialization 前 exact-compare
-descriptor；descriptor codec 不等同于 continuation publication。Gemma disk/session persistence 仍由后续的
-target continuation phase 接入现有 snapshot contract。
+descriptor；descriptor codec 不等同于 continuation publication。Gemma family continuation envelope
+另外绑定 token ledger、共同 frontier、target checkpoint fingerprint、version、byte count 和 checksum。
+Endpoint 保存两组 payload；older anchor 只保存 Sliding payload，并从 endpoint Global payload 截取对应
+prefix。Core 的 host export/import 只搬运 logical-order raw pages，不拥有 framing、identity 或 anchor policy。
 
 ### 3.6 Host capacity
 

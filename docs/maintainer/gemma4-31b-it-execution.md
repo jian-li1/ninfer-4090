@@ -60,6 +60,31 @@ The complete 262K graph profile reuses the existing activation and attention wor
 correctness, state-transition, memory, and whole-model latency evidence is recorded in
 [the Phase 11 qualification](../benchmarks/gemma4-phase11-cuda-graphs.md).
 
+## Persistent continuation
+
+The target continuation envelope stores the exact prompt-token ledger, committed execution
+frontier, immutable target-checkpoint fingerprint, version, byte count, checksum, and encoded
+descriptors for both KV groups. The endpoint owns the complete sliding and global host images.
+Older edit anchors own only their sliding image; their global history is a prefix of the endpoint
+global image and is reconstructed without storing a second copy. Decode rejects a different model
+binding, checkpoint fingerprint, KV layout, token domain, version, extent, or checksum before it
+reserves device pages.
+
+Restore first exact-matches the endpoint and then the deepest compatible anchor against the
+incoming token ledger. It imports both groups at one common frontier before normal page-local
+prefill resumes. Thus an unchanged prompt executes only its pending final token, while an edit
+after an anchor executes only the changed suffix. In particular, the sliding image records
+absolute logical blocks rather than ring slots, so restoring an anchor beyond position 1,024
+cannot reuse stale local KV. Core owns only logical-order host page transfer; this framing,
+identity, anchor selection, and global-prefix reconstruction remain Gemma-family policy.
+
+The long-context benchmark exposes explicit `--save-continuation PATH`,
+`--restore-continuation PATH`, and repeatable `--anchor N` controls for cross-process
+qualification. The Engine/server publication tier consumes the same target semantics in the next
+integration phase. Exact endpoint, edited-anchor, restart, validation, latency, and footprint
+evidence is recorded in
+[the Phase 14 qualification](../benchmarks/gemma4-phase14-continuation.md).
+
 ## MTP execution
 
 MTP1 optionally materializes the official four-layer assistant. Assistant layers 0-2 read the

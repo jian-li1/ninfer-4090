@@ -12,6 +12,10 @@ struct Package {
     static constexpr std::string_view model_id   = "gemma4-31b-it";
     static constexpr std::string_view weights_id = "groupwise-int";
     static constexpr std::string_view target_key = "gemma4_31b_it";
+    // The registered converter accepts exactly this immutable target checkpoint. KV layout is
+    // fingerprinted separately by the continuation's encoded group descriptors.
+    static constexpr std::string_view artifact_compatibility_fingerprint =
+        "sha256:1b9b1d622a93f02c0d33f98e502f233b5d707443af6ddc464ed0bf5498506c20";
 
     static constexpr gemma4::Capabilities capabilities{
         .text   = gemma4::Capability::Required,

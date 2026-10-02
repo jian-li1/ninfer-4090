@@ -89,6 +89,28 @@ struct KvGroupBatchExecutionView {
     std::uint32_t table_page_capacity = 0;
 };
 
+// Target-neutral host materialization of one logical heterogeneous-KV frontier. Pages are in
+// ascending logical-block order; payload holds one plan_host_kv_page_layout record per block.
+// Targets own framing, token identity, compatibility fingerprints, and persistence policy.
+struct HeterogeneousKVHostGroupImage {
+    std::uint32_t group_id = 0;
+    std::uint32_t frontier = 0;
+    std::vector<std::uint32_t> logical_blocks;
+    std::vector<std::byte> payload;
+
+    friend bool operator==(const HeterogeneousKVHostGroupImage&,
+                           const HeterogeneousKVHostGroupImage&) = default;
+};
+
+struct HeterogeneousKVHostImage {
+    std::vector<HeterogeneousKVHostGroupImage> groups;
+
+    [[nodiscard]] std::size_t payload_bytes() const noexcept;
+
+    friend bool operator==(const HeterogeneousKVHostImage&,
+                           const HeterogeneousKVHostImage&) = default;
+};
+
 class HeterogeneousKVCache;
 
 class HeterogeneousKVTransaction {
@@ -177,6 +199,13 @@ public:
     // the caller's usual event dependency.
     void restore(std::int32_t row, const HeterogeneousKVCheckpoint& checkpoint,
                  cudaStream_t stream = nullptr);
+    // Raw copies are ordered on stream. Callers must synchronize before reading an exported
+    // payload or releasing an imported payload. Import validates the exact retained logical
+    // block set for every group before reserving or changing device state.
+    [[nodiscard]] HeterogeneousKVHostImage export_host(std::int32_t row,
+                                                       cudaStream_t stream = nullptr) const;
+    void import_host(std::int32_t row, const HeterogeneousKVHostImage& image,
+                     cudaStream_t stream = nullptr);
 
 private:
     friend class HeterogeneousKVTransaction;

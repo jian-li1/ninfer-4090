@@ -1,6 +1,7 @@
 #include "core/heterogeneous_kv_cache.h"
 
 #include "core/device.h"
+#include "core/host_kv_arena.h"
 
 #include <algorithm>
 #include <array>
@@ -143,6 +144,17 @@ std::size_t HeterogeneousKVCacheLayout::payload_bytes() const noexcept {
 std::size_t HeterogeneousKVCacheLayout::metadata_bytes() const noexcept {
     std::size_t total = 0;
     for (const KvGroupLayout& group : groups) { total += group.metadata_bytes(); }
+    return total;
+}
+
+std::size_t HeterogeneousKVHostImage::payload_bytes() const noexcept {
+    std::size_t total = 0;
+    for (const HeterogeneousKVHostGroupImage& group : groups) {
+        if (group.payload.size() > std::numeric_limits<std::size_t>::max() - total) {
+            return std::numeric_limits<std::size_t>::max();
+        }
+        total += group.payload.size();
+    }
     return total;
 }
 
@@ -819,6 +831,136 @@ void HeterogeneousKVCache::restore(std::int32_t row,
                                  std::span<const DeviceKVPageHandle>(&handle, 1), stream);
         }
         group.publish_state(row, visible_begin_for(spec, row_group.frontier), row_group.frontier,
+                            stream);
+    }
+}
+
+HeterogeneousKVHostImage HeterogeneousKVCache::export_host(std::int32_t row,
+                                                           cudaStream_t stream) const {
+    const Impl::Row& source = impl_->require_row(row);
+    if (source.transaction_active) {
+        throw std::logic_error("cannot export an active heterogeneous KV transaction");
+    }
+    HeterogeneousKVHostImage image;
+    image.groups.reserve(impl_->groups.size());
+    for (std::size_t index = 0; index < impl_->groups.size(); ++index) {
+        Impl::Group& group = *impl_->groups[index];
+        const Impl::RowGroup& row_group = source.groups[index];
+        HeterogeneousKVHostGroupImage host_group{
+            .group_id = group.layout.spec.group_id,
+            .frontier = row_group.frontier,
+        };
+        host_group.logical_blocks.reserve(row_group.bindings.size());
+        std::vector<DeviceKVPageHandle> pages;
+        pages.reserve(row_group.bindings.size());
+        for (const Binding& binding : row_group.bindings) {
+            host_group.logical_blocks.push_back(binding.logical_block);
+            pages.push_back(binding.page.handle());
+        }
+        const HostKVPageLayout host_layout = plan_host_kv_page_layout(group.pages.geometry());
+        if (pages.size() > std::numeric_limits<std::size_t>::max() / host_layout.page_stride) {
+            throw std::overflow_error("heterogeneous KV host export size overflow");
+        }
+        host_group.payload.resize(pages.size() * host_layout.page_stride);
+        if (!pages.empty()) {
+            group.pages.copy_to_host(pages, host_group.payload.data(), host_layout, stream);
+        }
+        image.groups.push_back(std::move(host_group));
+    }
+    return image;
+}
+
+void HeterogeneousKVCache::import_host(std::int32_t row,
+                                       const HeterogeneousKVHostImage& image,
+                                       cudaStream_t stream) {
+    Impl::Row& destination = impl_->require_row(row);
+    if (destination.transaction_active) {
+        throw std::logic_error("cannot import an active heterogeneous KV transaction");
+    }
+    if (image.groups.size() != impl_->groups.size()) {
+        throw std::invalid_argument("heterogeneous KV host image group count changed");
+    }
+
+    std::vector<DeviceKVPageReservationRequest> requests;
+    requests.reserve(image.groups.size());
+    for (std::size_t index = 0; index < image.groups.size(); ++index) {
+        const HeterogeneousKVHostGroupImage& source = image.groups[index];
+        Impl::Group& group = *impl_->groups[index];
+        const KvGroupSpec& spec = group.layout.spec;
+        if (source.group_id != spec.group_id || source.frontier > spec.maximum_context) {
+            throw std::invalid_argument("heterogeneous KV host image group identity is invalid");
+        }
+        const std::uint32_t expected_pages =
+            source.frontier == 0
+                ? 0U
+                : 1U + (source.frontier - 1U) / spec.geometry.page_tokens;
+        const std::uint32_t first_block =
+            spec.retention == KvGroupRetention::SlidingWindow && source.frontier != 0
+                ? visible_begin_for(spec, source.frontier) / spec.geometry.page_tokens
+                : 0U;
+        const std::uint32_t retained_pages =
+            source.frontier == 0 ? 0U : expected_pages - first_block;
+        if (source.logical_blocks.size() != retained_pages) {
+            throw std::invalid_argument("heterogeneous KV host image page count is invalid");
+        }
+        for (std::uint32_t page = 0; page < retained_pages; ++page) {
+            if (source.logical_blocks[page] != first_block + page) {
+                throw std::invalid_argument(
+                    "heterogeneous KV host image logical blocks are not contiguous");
+            }
+        }
+        const HostKVPageLayout host_layout = plan_host_kv_page_layout(group.pages.geometry());
+        if (retained_pages > std::numeric_limits<std::size_t>::max() / host_layout.page_stride ||
+            source.payload.size() !=
+                static_cast<std::size_t>(retained_pages) * host_layout.page_stride) {
+            throw std::invalid_argument("heterogeneous KV host image payload size is invalid");
+        }
+        if (retained_pages != 0) {
+            requests.push_back({.pool = &group.pages, .pages = retained_pages});
+        }
+    }
+
+    std::vector<DeviceKVPageReservation> reservations = reserve_device_kv_page_bundle(requests);
+    std::vector<std::vector<Binding>> replacement(impl_->groups.size());
+    std::size_t reservation_index = 0;
+    for (std::size_t index = 0; index < image.groups.size(); ++index) {
+        const HeterogeneousKVHostGroupImage& source = image.groups[index];
+        Impl::Group& group = *impl_->groups[index];
+        std::vector<Binding>& bindings = replacement[index];
+        bindings.reserve(source.logical_blocks.size());
+        std::vector<DeviceKVPageHandle> pages;
+        pages.reserve(source.logical_blocks.size());
+        if (!source.logical_blocks.empty()) {
+            for (const std::uint32_t logical_block : source.logical_blocks) {
+                Binding binding{.logical_block = logical_block,
+                                .page = group.pages.materialize_one(
+                                    reservations[reservation_index])};
+                pages.push_back(binding.page.handle());
+                bindings.push_back(std::move(binding));
+            }
+            const HostKVPageLayout host_layout = plan_host_kv_page_layout(group.pages.geometry());
+            group.pages.copy_from_host(source.payload.data(), host_layout, pages, stream);
+            ++reservation_index;
+        }
+    }
+
+    for (std::size_t index = 0; index < image.groups.size(); ++index) {
+        const HeterogeneousKVHostGroupImage& source = image.groups[index];
+        Impl::Group& group = *impl_->groups[index];
+        Impl::RowGroup& row_group = destination.groups[index];
+        row_group.bindings = std::move(replacement[index]);
+        row_group.frontier = source.frontier;
+        const KvGroupSpec& spec = group.layout.spec;
+        for (const Binding& binding : row_group.bindings) {
+            const std::uint32_t slot = spec.retention == KvGroupRetention::SlidingWindow
+                                           ? binding.logical_block %
+                                                 group.layout.table_page_capacity
+                                           : binding.logical_block;
+            const DeviceKVPageHandle handle = binding.page.handle();
+            group.tables.publish(row_group.execution_row.handle(), slot,
+                                 std::span<const DeviceKVPageHandle>(&handle, 1), stream);
+        }
+        group.publish_state(row, visible_begin_for(spec, source.frontier), source.frontier,
                             stream);
     }
 }
