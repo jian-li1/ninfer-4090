@@ -6,7 +6,7 @@
 namespace ninfer::runtime {
 namespace {
 
-void validate(const ResolvedSamplingParameters& sampling) {
+void validate(const ResolvedSamplingParameters& sampling, std::int32_t maximum_top_k) {
     if (!std::isfinite(sampling.temperature) || !std::isfinite(sampling.top_p) ||
         !std::isfinite(sampling.min_p) || !std::isfinite(sampling.presence_penalty) ||
         !std::isfinite(sampling.frequency_penalty)) {
@@ -15,8 +15,12 @@ void validate(const ResolvedSamplingParameters& sampling) {
     if (sampling.temperature < 0.0F || sampling.temperature > 2.0F) {
         throw std::invalid_argument("temperature must be in [0,2]");
     }
-    if (sampling.top_k < 1 || sampling.top_k > 20) {
-        throw std::invalid_argument("resolved top_k must be in [1,20]");
+    if (maximum_top_k < 1 || maximum_top_k > kMaximumSamplingTopK) {
+        throw std::invalid_argument("model sampling maximum_top_k is outside [1,64]");
+    }
+    if (sampling.top_k < 1 || sampling.top_k > maximum_top_k) {
+        throw std::invalid_argument("resolved top_k exceeds the loaded target's executable cap " +
+                                    std::to_string(maximum_top_k));
     }
     if (sampling.top_p < 0.0F || sampling.top_p > 1.0F) {
         throw std::invalid_argument("top_p must be in [0,1]");
@@ -46,11 +50,11 @@ ResolvedSamplingParameters resolve_sampling(const ModelSamplingDefaults& default
         .frequency_penalty = overrides.frequency_penalty.value_or(preset.frequency_penalty),
         .seed              = overrides.seed.value_or(0),
     };
-    // The registered sampling pipeline has an exact top-20 candidate domain. Preserve the
-    // existing public meaning of zero (use the target cap), then expose only concrete values to
-    // runtimes.
-    if (resolved.top_k == 0) { resolved.top_k = 20; }
-    validate(resolved);
+    // Zero means the loaded target's complete registered candidate domain. Concrete values stay
+    // target-validated so Gemma can expose its official top-64 CPU sampler without pretending the
+    // Qwen CUDA sampler implements more than its exact top-20 route.
+    if (resolved.top_k == 0) { resolved.top_k = defaults.maximum_top_k; }
+    validate(resolved, defaults.maximum_top_k);
     return resolved;
 }
 

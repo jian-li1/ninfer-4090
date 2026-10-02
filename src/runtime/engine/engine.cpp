@@ -244,8 +244,16 @@ public:
     using Core35      = runtime::EngineCore<targets::Qwen3_6_35BA3BInstance>;
     using ScoreCore27 = runtime::CausalScoreCore<targets::Qwen3_6_27BInstance>;
     using ScoreCore35 = runtime::CausalScoreCore<targets::Qwen3_6_35BA3BInstance>;
+#if NINFER_BUILD_GEMMA4_31B_IT
+    using CoreGemma = runtime::EngineCore<targets::Gemma4_31B_ITInstance>;
+    using ScoreCoreGemma = runtime::CausalScoreCore<targets::Gemma4_31B_ITInstance>;
+#endif
     using Core = std::variant<std::monostate, std::unique_ptr<Core27>, std::unique_ptr<Core35>,
-                              std::unique_ptr<ScoreCore27>, std::unique_ptr<ScoreCore35>>;
+                              std::unique_ptr<ScoreCore27>, std::unique_ptr<ScoreCore35>
+#if NINFER_BUILD_GEMMA4_31B_IT
+                              , std::unique_ptr<CoreGemma>, std::unique_ptr<ScoreCoreGemma>
+#endif
+                              >;
 
     explicit Impl(EngineOptions engine_options)
         : options(normalize_engine_options(std::move(engine_options))),
@@ -266,12 +274,22 @@ public:
                     }
                     return std::make_unique<Core27>(*target_ptr, device, options,
                                                     std::move(constructed.context_cost));
-                } else {
+                } else if constexpr (std::is_same_v<Instance,
+                                                    targets::Qwen3_6_35BA3BInstance>) {
                     if (options.purpose == EnginePurpose::CausalScoring) {
                         return std::make_unique<ScoreCore35>(*target_ptr, device);
                     }
                     return std::make_unique<Core35>(*target_ptr, device, options,
                                                     std::move(constructed.context_cost));
+#if NINFER_BUILD_GEMMA4_31B_IT
+                } else {
+                    static_assert(std::is_same_v<Instance, targets::Gemma4_31B_ITInstance>);
+                    if (options.purpose == EnginePurpose::CausalScoring) {
+                        return std::make_unique<ScoreCoreGemma>(*target_ptr, device);
+                    }
+                    return std::make_unique<CoreGemma>(*target_ptr, device, options,
+                                                       std::move(constructed.context_cost));
+#endif
                 }
             },
             active);
@@ -492,7 +510,11 @@ std::vector<float> Engine::score_tokens(std::vector<TokenId> tokens, std::uint32
         [&](auto& core) -> std::vector<float> {
             using CoreState = std::remove_cvref_t<decltype(core)>;
             if constexpr (std::is_same_v<CoreState, std::unique_ptr<Impl::ScoreCore27>> ||
-                          std::is_same_v<CoreState, std::unique_ptr<Impl::ScoreCore35>>) {
+                          std::is_same_v<CoreState, std::unique_ptr<Impl::ScoreCore35>>
+#if NINFER_BUILD_GEMMA4_31B_IT
+                          || std::is_same_v<CoreState, std::unique_ptr<Impl::ScoreCoreGemma>>
+#endif
+                          ) {
                 return core->score(std::move(prompt.impl_->value), first_target);
             } else {
                 throw std::logic_error("Engine scoring core is unavailable");
@@ -588,7 +610,12 @@ GenerationHandle Engine::submit(PreparedPrompt prompt, RequestOptions options,
             if constexpr (std::is_same_v<CoreState, std::monostate>) {
                 throw std::logic_error("Engine core is unavailable");
             } else if constexpr (std::is_same_v<CoreState, std::unique_ptr<Impl::ScoreCore27>> ||
-                                 std::is_same_v<CoreState, std::unique_ptr<Impl::ScoreCore35>>) {
+                                 std::is_same_v<CoreState, std::unique_ptr<Impl::ScoreCore35>>
+#if NINFER_BUILD_GEMMA4_31B_IT
+                                 || std::is_same_v<CoreState,
+                                                   std::unique_ptr<Impl::ScoreCoreGemma>>
+#endif
+                                 ) {
                 throw std::logic_error("Engine generation core is unavailable");
             } else {
                 auto submission = core->submit(std::move(prompt.impl_->value), prompt_summary,

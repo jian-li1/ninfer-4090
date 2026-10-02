@@ -1,4 +1,5 @@
 #include "targets/gemma4_31b_it/impl/runtime/persistent_model.h"
+#include "targets/gemma4_31b_it/impl/runtime/runtime_chunk.h"
 
 #include <ninfer/ops/embedding.h>
 #include <ninfer/ops/linear.h>
@@ -74,7 +75,7 @@ PagedKVLayerView layer_cache(HeterogeneousKVTransaction& transaction,
     };
 }
 
-PagedKVLayerView layer_cache(const HeterogeneousKVCache& cache,
+PagedKVLayerView layer_cache(const HeterogeneousKVCache& cache, std::int32_t row,
                              TextKvLayerAddress address, std::int32_t head_dim,
                              std::int32_t kv_heads) {
     const std::size_t base = static_cast<std::size_t>(address.group_layer) * 4;
@@ -83,7 +84,7 @@ PagedKVLayerView layer_cache(const HeterogeneousKVCache& cache,
         .v_pages = cache.plane(address.group_id, base + 1),
         .k_scale_pages = cache.plane(address.group_id, base + 2),
         .v_scale_pages = cache.plane(address.group_id, base + 3),
-        .block_table = cache.execution_view(0, address.group_id).block_table,
+        .block_table = cache.execution_view(row, address.group_id).block_table,
         .head_dim = head_dim,
         .num_kv_heads = kv_heads,
         .storage = KvCacheStorage::RK4V4E8,
@@ -316,7 +317,8 @@ std::int32_t read_greedy_token(const Tensor& logits, cudaStream_t stream) {
 }
 
 std::int32_t execute_chunk(const ModelWeights& weights, HeterogeneousKVCache& cache,
-                           std::uint32_t first, std::span<const std::int32_t> input_tokens,
+                           std::int32_t row, std::uint32_t first,
+                           std::span<const std::int32_t> input_tokens,
                            std::uint32_t maximum_context, WorkspaceArena& activations,
                            WorkspaceArena& attention_workspace, cudaStream_t stream,
                            bool produce_logits, const Tensor& hidden_state = {},
@@ -325,7 +327,7 @@ std::int32_t execute_chunk(const ModelWeights& weights, HeterogeneousKVCache& ca
     auto activation_scope = activations.scope();
     ModelBuffers buffers = allocate_model_buffers(activations, tokens);
     upload_decode_parameters(buffers, first, input_tokens, stream);
-    auto transaction = cache.begin_transaction(0, first, static_cast<std::uint32_t>(tokens), stream);
+    auto transaction = cache.begin_transaction(row, first, static_cast<std::uint32_t>(tokens), stream);
     const ops::CausalAttentionExecutionEnvelope envelope =
         tokens == 1 ? ops::CausalAttentionExecutionEnvelope{1, maximum_context}
                     : ops::CausalAttentionExecutionEnvelope{
@@ -395,7 +397,7 @@ struct AssistantStepResult {
 
 AssistantStepResult execute_assistant(const ModelWeights& target_weights,
                                       const AssistantWeights& assistant_weights,
-                                      const HeterogeneousKVCache& cache,
+                                      const HeterogeneousKVCache& cache, std::int32_t row,
                                       std::int32_t current_token, std::uint32_t position,
                                       std::uint32_t maximum_context,
                                       const Tensor& input_hidden_state,
@@ -454,7 +456,7 @@ AssistantStepResult execute_assistant(const ModelWeights& target_weights,
                       buffers.positions, query, stream);
         const TextKvLayerAddress address = text_kv_layer_address(
             AssistantConfig::shared_target_kv_layers[layer]);
-        const PagedKVLayerView view = layer_cache(cache, address, head_dim, kv_heads);
+        const PagedKVLayerView view = layer_cache(cache, row, address, head_dim, kv_heads);
         if (full) {
             ops::shared_kv_full_softmax_attention(
                 query, buffers.last_key_positions, kFullGeometry, 1.0F, view,
@@ -527,7 +529,8 @@ VerifyResult finalize_mtp_verify(ModelBuffers& buffers,
 }
 
 VerifyResult execute_mtp_verify(const ModelWeights& weights,
-                                HeterogeneousKVCache& cache, std::uint32_t first,
+                                HeterogeneousKVCache& cache, std::int32_t row,
+                                std::uint32_t first,
                                 std::int32_t current_token,
                                 std::span<const std::int32_t> draft_tokens,
                                 std::uint32_t maximum_context,
@@ -545,7 +548,7 @@ VerifyResult execute_mtp_verify(const ModelWeights& weights,
     tokens.insert(tokens.end(), draft_tokens.begin(), draft_tokens.end());
     upload_decode_parameters(buffers, first, tokens, stream);
     auto transaction = cache.begin_transaction(
-        0, first, static_cast<std::uint32_t>(token_count), stream);
+        row, first, static_cast<std::uint32_t>(token_count), stream);
     const ops::CausalAttentionExecutionEnvelope envelope{1, maximum_context};
     enqueue_model(weights, transaction, buffers, envelope, attention_workspace, stream,
                   true, true);
@@ -883,7 +886,7 @@ PersistentRunResult run_persistent_target(const std::filesystem::path& artifact_
                                         prefill_tokens;
         const auto chunk = std::span<const std::int32_t>(ledger).subspan(first, count);
         const std::int32_t greedy = execute_chunk(
-            weights, cache, first, chunk, options.maximum_context, activations,
+            weights, cache, 0, first, chunk, options.maximum_context, activations,
             attention_workspace, device.stream, produce_logits,
             produce_logits ? target_hidden_state : Tensor{},
             produce_logits ? options.dump_directory : std::filesystem::path{});
@@ -959,7 +962,7 @@ PersistentRunResult run_persistent_target(const std::filesystem::path& artifact_
         if (options.use_cuda_graph) {
             return decode_graph.replay(cache, first, token, activations, device.stream, true);
         }
-        return execute_chunk(weights, cache, first,
+        return execute_chunk(weights, cache, 0, first,
                              std::span<const std::int32_t>(&token, 1),
                              options.maximum_context, activations, attention_workspace,
                              device.stream, true);
@@ -988,7 +991,7 @@ PersistentRunResult run_persistent_target(const std::filesystem::path& artifact_
                     draft == 0 ? current_token : draft_tokens.back();
                 assistant_timer.start(device.stream);
                 const AssistantStepResult step = execute_assistant(
-                    weights, *assistant_weights, cache, input_token, first,
+                    weights, *assistant_weights, cache, 0, input_token, first,
                     options.maximum_context, *input_hidden, assistant_feedback_state,
                     activations, attention_workspace, device.stream);
                 result.assistant_milliseconds += assistant_timer.stop(device.stream);
@@ -1009,7 +1012,7 @@ PersistentRunResult run_persistent_target(const std::filesystem::path& artifact_
                           cache, first, current_token, draft_tokens, remaining,
                           target_hidden_state, activations, device.stream)
                     : execute_mtp_verify(
-                          weights, cache, first, current_token, draft_tokens,
+                          weights, cache, 0, first, current_token, draft_tokens,
                           options.maximum_context, remaining, target_hidden_state,
                           activations, attention_workspace, device.stream);
             result.verify_milliseconds += verify_timer.stop(device.stream);
@@ -1065,6 +1068,308 @@ PersistentRunResult run_persistent_target(const std::filesystem::path& artifact_
     result.graph_capture_count = decode_graph.capture_count() + mtp_verify_graph.capture_count();
     result.graph_replay_count = decode_graph.replay_count() + mtp_verify_graph.replay_count();
     result.final_frontier = cache.frontier(0);
+    return result;
+}
+
+std::vector<float> execute_runtime_chunk(
+    const ModelWeights& weights, HeterogeneousKVCache& cache, std::int32_t row,
+    std::uint32_t first, std::span<const std::int32_t> input_tokens,
+    std::uint32_t maximum_context, WorkspaceArena& activations,
+    WorkspaceArena& attention_workspace, cudaStream_t stream, bool produce_logits,
+    const Tensor& final_hidden) {
+    const std::int32_t tokens = static_cast<std::int32_t>(input_tokens.size());
+    auto activation_scope = activations.scope();
+    ModelBuffers buffers = allocate_model_buffers(activations, tokens);
+    upload_decode_parameters(buffers, first, input_tokens, stream);
+    auto transaction = cache.begin_transaction(row, first, static_cast<std::uint32_t>(tokens), stream);
+    const ops::CausalAttentionExecutionEnvelope envelope =
+        tokens == 1 ? ops::CausalAttentionExecutionEnvelope{1, maximum_context}
+                    : ops::CausalAttentionExecutionEnvelope{
+                          first + 1U, first + static_cast<std::uint32_t>(tokens)};
+    enqueue_model(weights, transaction, buffers, envelope, attention_workspace, stream,
+                  produce_logits);
+    if (produce_logits && final_hidden.data != nullptr) {
+        const Tensor selected =
+            buffers.final_hidden.slice(1, tokens - 1, 1).view({TextConfig::hidden});
+        CUDA_CHECK(cudaMemcpyAsync(final_hidden.data, selected.data, selected.bytes(),
+                                   cudaMemcpyDeviceToDevice, stream));
+    }
+    transaction.commit(stream);
+    if (!produce_logits) { return {}; }
+    std::vector<float> logits(TextConfig::vocabulary);
+    CUDA_CHECK(cudaMemcpyAsync(logits.data(), buffers.logits.data,
+                               logits.size() * sizeof(float), cudaMemcpyDeviceToHost, stream));
+    CUDA_CHECK(cudaStreamSynchronize(stream));
+    return logits;
+}
+
+class RuntimeDecodeGraph::Impl {
+public:
+    DecodeGraphDefinition definition;
+    DecodeGraphExecutable executable;
+    std::int32_t row = -1;
+    std::size_t device_bytes = 0;
+};
+
+RuntimeDecodeGraph::RuntimeDecodeGraph() : impl_(std::make_unique<Impl>()) {}
+RuntimeDecodeGraph::~RuntimeDecodeGraph() = default;
+RuntimeDecodeGraph::RuntimeDecodeGraph(RuntimeDecodeGraph&&) noexcept = default;
+RuntimeDecodeGraph& RuntimeDecodeGraph::operator=(RuntimeDecodeGraph&&) noexcept = default;
+
+void RuntimeDecodeGraph::capture(const ModelWeights& weights, HeterogeneousKVCache& cache,
+                                 std::int32_t row, std::uint32_t maximum_context,
+                                 WorkspaceArena& activations,
+                                 WorkspaceArena& attention_workspace, cudaStream_t stream,
+                                 const Tensor& final_hidden) {
+    if (impl_->executable.ready()) {
+        throw std::logic_error("Gemma runtime decode graph cannot be recaptured");
+    }
+    CUDA_CHECK(cudaStreamSynchronize(stream));
+    const std::size_t free_before = free_device_bytes();
+    {
+        auto activation_scope = activations.scope();
+        ModelBuffers buffers = allocate_model_buffers(activations, 1);
+        const std::int32_t token = 0;
+        const std::uint32_t first = cache.frontier(row);
+        upload_decode_parameters(buffers, first,
+                                 std::span<const std::int32_t>(&token, 1), stream);
+        auto transaction = cache.begin_transaction(row, first, 1, stream);
+        impl_->definition.capture(stream, [&] {
+            enqueue_model(weights, transaction, buffers, {1, maximum_context},
+                          attention_workspace, stream, true, false);
+            if (final_hidden.data != nullptr) {
+                CUDA_CHECK(cudaMemcpyAsync(final_hidden.data, buffers.final_hidden.data,
+                                           final_hidden.bytes(), cudaMemcpyDeviceToDevice,
+                                           stream));
+            }
+        });
+        transaction.rollback();
+    }
+    impl_->executable.instantiate(impl_->definition);
+    impl_->executable.upload(stream);
+    CUDA_CHECK(cudaStreamSynchronize(stream));
+    const std::size_t free_after = free_device_bytes();
+    impl_->device_bytes = free_before > free_after ? free_before - free_after : 0;
+    impl_->row = row;
+}
+
+std::vector<float> RuntimeDecodeGraph::replay(HeterogeneousKVCache& cache,
+                                              std::int32_t row, std::uint32_t first,
+                                              std::int32_t input_token,
+                                              WorkspaceArena& activations,
+                                              cudaStream_t stream) {
+    if (!impl_->executable.ready() || row != impl_->row) {
+        throw std::logic_error("Gemma runtime decode graph row is not captured");
+    }
+    auto activation_scope = activations.scope();
+    ModelBuffers buffers = allocate_model_buffers(activations, 1);
+    upload_decode_parameters(buffers, first,
+                             std::span<const std::int32_t>(&input_token, 1), stream);
+    auto transaction = cache.begin_transaction(row, first, 1, stream);
+    impl_->executable.launch(stream);
+    transaction.commit(stream);
+    std::vector<float> logits(TextConfig::vocabulary);
+    CUDA_CHECK(cudaMemcpyAsync(logits.data(), buffers.logits.data,
+                               logits.size() * sizeof(float), cudaMemcpyDeviceToHost, stream));
+    CUDA_CHECK(cudaStreamSynchronize(stream));
+    return logits;
+}
+
+bool RuntimeDecodeGraph::ready() const noexcept { return impl_->executable.ready(); }
+std::size_t RuntimeDecodeGraph::device_bytes() const noexcept { return impl_->device_bytes; }
+
+class RuntimeMtpVerifyGraph::Impl {
+public:
+    DecodeGraphDefinition definition;
+    DecodeGraphExecutable executable;
+    std::int32_t row = -1;
+    std::uint32_t draft_width = 0;
+    std::size_t device_bytes = 0;
+};
+
+RuntimeMtpVerifyGraph::RuntimeMtpVerifyGraph() : impl_(std::make_unique<Impl>()) {}
+RuntimeMtpVerifyGraph::~RuntimeMtpVerifyGraph() = default;
+RuntimeMtpVerifyGraph::RuntimeMtpVerifyGraph(RuntimeMtpVerifyGraph&&) noexcept = default;
+RuntimeMtpVerifyGraph& RuntimeMtpVerifyGraph::operator=(RuntimeMtpVerifyGraph&&) noexcept = default;
+
+void RuntimeMtpVerifyGraph::capture(const ModelWeights& weights,
+                                    HeterogeneousKVCache& cache, std::int32_t row,
+                                    std::uint32_t maximum_context,
+                                    std::uint32_t draft_width,
+                                    WorkspaceArena& activations,
+                                    WorkspaceArena& attention_workspace,
+                                    cudaStream_t stream) {
+    if (impl_->executable.ready() || draft_width == 0 ||
+        draft_width > AssistantConfig::maximum_draft_size) {
+        throw std::logic_error("Gemma runtime MTP graph has invalid capture state");
+    }
+    CUDA_CHECK(cudaStreamSynchronize(stream));
+    const std::size_t free_before = free_device_bytes();
+    {
+        auto activation_scope = activations.scope();
+        const std::int32_t token_count = static_cast<std::int32_t>(draft_width + 1U);
+        ModelBuffers buffers = allocate_model_buffers(activations, token_count, true);
+        const std::vector<std::int32_t> inputs(static_cast<std::size_t>(token_count), 0);
+        const std::uint32_t first = cache.frontier(row);
+        upload_decode_parameters(buffers, first, inputs, stream);
+        auto transaction = cache.begin_transaction(
+            row, first, static_cast<std::uint32_t>(token_count), stream);
+        impl_->definition.capture(stream, [&] {
+            enqueue_model(weights, transaction, buffers, {1, maximum_context},
+                          attention_workspace, stream, true, true);
+        });
+        transaction.rollback();
+    }
+    impl_->executable.instantiate(impl_->definition);
+    impl_->executable.upload(stream);
+    CUDA_CHECK(cudaStreamSynchronize(stream));
+    const std::size_t free_after = free_device_bytes();
+    impl_->device_bytes = free_before > free_after ? free_before - free_after : 0;
+    impl_->row = row;
+    impl_->draft_width = draft_width;
+}
+
+RuntimeMtpRound RuntimeMtpVerifyGraph::replay(
+    HeterogeneousKVCache& cache, std::int32_t row, std::uint32_t first,
+    std::int32_t current_token, std::span<const std::int32_t> drafts,
+    std::uint32_t remaining_outputs, const Tensor& target_hidden_state,
+    WorkspaceArena& activations, cudaStream_t stream,
+    const RuntimeMtpSampler& sample_target) {
+    if (!impl_->executable.ready() || row != impl_->row ||
+        drafts.size() != impl_->draft_width || remaining_outputs == 0) {
+        throw std::logic_error("Gemma runtime MTP graph replay shape changed");
+    }
+    auto activation_scope = activations.scope();
+    const std::int32_t token_count = static_cast<std::int32_t>(drafts.size() + 1U);
+    ModelBuffers buffers = allocate_model_buffers(activations, token_count, true);
+    std::vector<std::int32_t> inputs;
+    inputs.reserve(static_cast<std::size_t>(token_count));
+    inputs.push_back(current_token);
+    inputs.insert(inputs.end(), drafts.begin(), drafts.end());
+    upload_decode_parameters(buffers, first, inputs, stream);
+    auto transaction = cache.begin_transaction(
+        row, first, static_cast<std::uint32_t>(token_count), stream);
+    impl_->executable.launch(stream);
+    std::vector<float> host_logits(static_cast<std::size_t>(TextConfig::vocabulary) *
+                                   static_cast<std::size_t>(token_count));
+    CUDA_CHECK(cudaMemcpyAsync(host_logits.data(), buffers.logits.data,
+                               host_logits.size() * sizeof(float), cudaMemcpyDeviceToHost,
+                               stream));
+    CUDA_CHECK(cudaStreamSynchronize(stream));
+
+    RuntimeMtpRound result;
+    result.drafted_tokens = static_cast<std::uint32_t>(drafts.size());
+    for (std::uint32_t output = 0; output < remaining_outputs; ++output) {
+        const auto column = std::span<const float>(host_logits).subspan(
+            static_cast<std::size_t>(output) * TextConfig::vocabulary,
+            TextConfig::vocabulary);
+        const std::int32_t target = sample_target
+                                        ? sample_target(column, output)
+                                        : static_cast<std::int32_t>(
+                                              std::max_element(column.begin(), column.end()) -
+                                              column.begin());
+        if (output < drafts.size() && target == drafts[output]) {
+            result.output_tokens.push_back(drafts[output]);
+            ++result.accepted_drafts;
+            continue;
+        }
+        result.output_tokens.push_back(target);
+        break;
+    }
+    const std::uint32_t produced = static_cast<std::uint32_t>(result.output_tokens.size());
+    const Tensor selected =
+        buffers.final_hidden.slice(1, produced - 1U, 1).view({TextConfig::hidden});
+    CUDA_CHECK(cudaMemcpyAsync(target_hidden_state.data, selected.data, selected.bytes(),
+                               cudaMemcpyDeviceToDevice, stream));
+    result.transaction = std::move(transaction);
+    return result;
+}
+
+bool RuntimeMtpVerifyGraph::ready() const noexcept { return impl_->executable.ready(); }
+std::size_t RuntimeMtpVerifyGraph::device_bytes() const noexcept { return impl_->device_bytes; }
+
+RuntimeMtpRound execute_runtime_mtp_round(
+    const ModelWeights& target_weights, const AssistantWeights& assistant_weights,
+    HeterogeneousKVCache& cache, std::int32_t row, std::uint32_t first,
+    std::int32_t current_token, std::uint32_t draft_count, std::uint32_t maximum_context,
+    std::uint32_t remaining_outputs, const Tensor& target_hidden_state,
+    Tensor assistant_feedback_state, WorkspaceArena& activations,
+    WorkspaceArena& attention_workspace, cudaStream_t stream,
+    const RuntimeMtpSampler& sample_target, RuntimeMtpVerifyGraph* verify_graph) {
+    if (draft_count == 0 || draft_count > AssistantConfig::maximum_draft_size ||
+        remaining_outputs == 0 || target_hidden_state.data == nullptr ||
+        assistant_feedback_state.data == nullptr) {
+        throw std::invalid_argument("Gemma runtime MTP round has invalid extents");
+    }
+    draft_count = std::min(draft_count, remaining_outputs);
+    std::vector<std::int32_t> drafts;
+    drafts.reserve(draft_count);
+    const Tensor* input_hidden = &target_hidden_state;
+    for (std::uint32_t draft = 0; draft < draft_count; ++draft) {
+        const std::int32_t input = draft == 0 ? current_token : drafts.back();
+        const AssistantStepResult step = execute_assistant(
+            target_weights, assistant_weights, cache, row, input, first, maximum_context,
+            *input_hidden, assistant_feedback_state, activations, attention_workspace, stream);
+        drafts.push_back(step.token);
+        input_hidden = &assistant_feedback_state;
+    }
+
+    if (verify_graph != nullptr && !verify_graph->ready()) {
+        verify_graph->capture(target_weights, cache, row, maximum_context, draft_count,
+                              activations, attention_workspace, stream);
+    }
+    if (verify_graph != nullptr && verify_graph->ready() &&
+        draft_count == static_cast<std::uint32_t>(drafts.size())) {
+        return verify_graph->replay(cache, row, first, current_token, drafts,
+                                    remaining_outputs, target_hidden_state, activations,
+                                    stream, sample_target);
+    }
+
+    auto activation_scope = activations.scope();
+    const std::int32_t token_count = static_cast<std::int32_t>(drafts.size() + 1U);
+    ModelBuffers buffers = allocate_model_buffers(activations, token_count, true);
+    std::vector<std::int32_t> inputs;
+    inputs.reserve(static_cast<std::size_t>(token_count));
+    inputs.push_back(current_token);
+    inputs.insert(inputs.end(), drafts.begin(), drafts.end());
+    upload_decode_parameters(buffers, first, inputs, stream);
+    auto transaction = cache.begin_transaction(row, first,
+                                               static_cast<std::uint32_t>(token_count), stream);
+    enqueue_model(target_weights, transaction, buffers, {1, maximum_context},
+                  attention_workspace, stream, true, true);
+    std::vector<float> host_logits(static_cast<std::size_t>(TextConfig::vocabulary) *
+                                   static_cast<std::size_t>(token_count));
+    CUDA_CHECK(cudaMemcpyAsync(host_logits.data(), buffers.logits.data,
+                               host_logits.size() * sizeof(float), cudaMemcpyDeviceToHost,
+                               stream));
+    CUDA_CHECK(cudaStreamSynchronize(stream));
+    std::uint32_t accepted = 0;
+    RuntimeMtpRound result;
+    result.drafted_tokens = draft_count;
+    for (std::uint32_t output = 0; output < remaining_outputs; ++output) {
+        const auto column = std::span<const float>(host_logits).subspan(
+            static_cast<std::size_t>(output) * TextConfig::vocabulary,
+            TextConfig::vocabulary);
+        const std::int32_t target = sample_target
+                                        ? sample_target(column, output)
+                                        : static_cast<std::int32_t>(
+                                              std::max_element(column.begin(), column.end()) -
+                                              column.begin());
+        if (output < drafts.size() && target == drafts[output]) {
+            result.output_tokens.push_back(drafts[output]);
+            ++accepted;
+            continue;
+        }
+        result.output_tokens.push_back(target);
+        break;
+    }
+    result.accepted_drafts = accepted;
+    const std::uint32_t produced = static_cast<std::uint32_t>(result.output_tokens.size());
+    const Tensor selected =
+        buffers.final_hidden.slice(1, produced - 1U, 1).view({TextConfig::hidden});
+    CUDA_CHECK(cudaMemcpyAsync(target_hidden_state.data, selected.data, selected.bytes(),
+                               cudaMemcpyDeviceToDevice, stream));
+    result.transaction = std::move(transaction);
     return result;
 }
 

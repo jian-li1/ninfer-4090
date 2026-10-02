@@ -167,6 +167,9 @@ class PreparedPromptAccess {
 public:
     [[nodiscard]] static const PreparedPromptData& view(const PreparedPrompt& prompt);
     [[nodiscard]] static PreparedPromptData take(PreparedPrompt&& prompt);
+    // Target-neutral construction seam for peer frontends that use the common Engine prompt
+    // carrier. The producing frontend remains responsible for all model-specific serialization.
+    [[nodiscard]] static PreparedPrompt make(PreparedPromptData data);
 };
 
 } // namespace ninfer::targets::qwen3_6

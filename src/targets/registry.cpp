@@ -199,6 +199,25 @@ Qwen3_6_35BA3BInstance::Qwen3_6_35BA3BInstance(std::unique_ptr<LoadedQwen3_6_35B
 
 Qwen3_6_35BA3BInstance::~Qwen3_6_35BA3BInstance() = default;
 
+#if NINFER_BUILD_GEMMA4_31B_IT
+LoadedGemma4_31B_IT::LoadedGemma4_31B_IT(
+    std::unique_ptr<Gemma4_31B_IT::LoadedModel> stable_model, const EngineOptions& options)
+    : model(std::move(stable_model)), frontend(Gemma4_31B_IT::make_frontend(*model, options)) {}
+
+LoadedGemma4_31B_IT::~LoadedGemma4_31B_IT() = default;
+
+Gemma4_31B_ITInstance::Gemma4_31B_ITInstance(
+    std::unique_ptr<LoadedGemma4_31B_IT> stable_loaded,
+    runtime::KvCapacityResolution resolution, Gemma4_31B_IT::SequencePlan sequence_plan,
+    DeviceContext& device, const StartupObserver& startup_observer)
+    : loaded(std::move(stable_loaded)), kv_capacity_resolution(resolution),
+      capacity(sequence_plan.capacity()),
+      program(Gemma4_31B_IT::create_program(*loaded->model, std::move(sequence_plan), device,
+                                            startup_observer)) {}
+
+Gemma4_31B_ITInstance::~Gemma4_31B_ITInstance() = default;
+#endif
+
 const RegisteredTargetDescriptor*
 identify_registered_target(const artifact::ArtifactIdentity& identity) noexcept {
     static constexpr std::array qwen_targets{
@@ -268,6 +287,12 @@ ConstructedTarget construct_target(const EngineOptions& options, DeviceContext& 
         return construct_registered<Qwen3_6_35BA3B, LoadedQwen3_6_35BA3B, Qwen3_6_35BA3BInstance>(
             options, device, reader, load_start, Qwen3_6_35BA3B::target_key);
     }
+#if NINFER_BUILD_GEMMA4_31B_IT
+    if (identity.model_id == Gemma4_31B_IT::model_id) {
+        return construct_registered<Gemma4_31B_IT, LoadedGemma4_31B_IT, Gemma4_31B_ITInstance>(
+            options, device, reader, load_start, Gemma4_31B_IT::target_key);
+    }
+#endif
     if (const RegisteredTargetDescriptor* target = identify_registered_target(identity);
         target != nullptr) {
         throw std::runtime_error("registered target '" + std::string(target->target_key) +

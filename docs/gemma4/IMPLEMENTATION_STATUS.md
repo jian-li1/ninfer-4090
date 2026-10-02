@@ -32,9 +32,9 @@ commit that completes each phase.
 | 10 | deferred/conditional | Re-evaluate after graph, MTP, selected draft width, and server residency measurements |
 | 11 | complete | One graph spans absolute positions, ring wrap, rollback/restore, and 262K with a 2.13% decode benefit |
 | 12 | complete | Official MTP1 with exact greedy parity, atomic prefix commit, graph replay, and positive 4K speedup |
-| 13 | pending | MTP2 through MTP6 measurement and selection |
-| 14 | pending | Prefix reuse and persistent continuation qualification |
-| 15 | pending | Full server/product integration |
+| 13 | complete | MTP1 through MTP6 qualified; width 1 selected for production and graph replay |
+| 14 | complete | Exact heterogeneous continuation persistence, wrapped anchors, and restart restore |
+| 15 | complete | Public Engine, CLI, scoring, serving protocols, slots, graphs, and bounded cache replacement |
 | 16 | pending | Performance and regression qualification |
 | 17 | pending | Documentation and release packaging |
 
@@ -276,16 +276,62 @@ Phase 0 full-suite result remains the regression baseline; all Phase 2 affected 
   1,294,663,680 bytes free. Detailed evidence is in
   [the Phase 13 record](../benchmarks/gemma4-phase13-mtp-widths.md).
 
+## Phase 14 record
+
+- Added a versioned `NIG4CNT1` continuation envelope over the exact token ledger, model/checkpoint
+  binding, heterogeneous-KV descriptors, payload byte count, and checksum. Incompatible framing,
+  bindings, layouts, checksums, and truncated payloads fail before publication.
+- The endpoint owns both local and global groups. Older edit anchors retain only the wrapped local
+  group and share the endpoint's prefix-addressable global payload.
+- A varied 1,153-token real-model test restores the 1,152-token endpoint exactly, while an edit at
+  token 1,100 selects the 1,089-token anchor after the local ring has wrapped. Both routes match
+  their independent cold greedy outputs and final frontiers.
+- A separate-process restart restored the 462.20 MiB snapshot in 499.060 ms, then computed the one
+  remaining prompt token in 517.287 ms. Snapshot capture and encode took 828.019 ms.
+- Detailed framing, correctness, footprint, latency, and reproduction evidence is in
+  [the Phase 14 record](../benchmarks/gemma4-phase14-continuation.md).
+
+## Phase 15 record
+
+- Published `gemma4-31b-it/groupwise-int` through the sole public `.ninfer` `Engine` route for
+  generation and offline causal scoring. The target package owns its heterogeneous schedule,
+  bindings, Program state, ordinary decode graph, selected MTP1 verifier graph, and text frontend;
+  Qwen family scheduling remains unchanged.
+- Added the checkpoint tokenizer, Gemma chat formatting, thinking/content channel publication,
+  stop handling, and tool-call parsing. The product advertises text-only capability and rejects
+  image input explicitly; the optional vision phase remains unscheduled.
+- Public Engine qualification covers streaming generation, fixed-seed sampling, ordinary/MTP1
+  greedy parity, stop tokens, two-lane compact decode, cancellation, slot save/erase/restore and
+  continuation reuse, exact text-only rejection, causal-scoring reset semantics, and CUDA Graph
+  publication.
+- Bounded host continuations now participate in the common pressure contract. When the private
+  catalog fills, the Gemma Program exposes independently recoverable single-victim targets and
+  commits the selected eviction atomically with materialization. The real Engine regression
+  asserts private-owner eviction and checkpoint-drop counters. Exact prompt endpoints without
+  retained logits are not misrepresented as reusable candidates.
+- A real loopback server passed health, model metadata, metrics, OpenAI Chat Completions,
+  OpenAI Responses, Anthropic Messages, Chat SSE, slot save/restore/erase, and four sequential
+  requests across a two-continuation catalog. Disabled media returned HTTP 400 with
+  `vision_disabled`; all supported requests returned HTTP 200 and the server remained healthy.
+- The public Qwen3.8 Engine smoke remained healthy after the generic registry, Engine, sampler,
+  and frontend changes. Focused serving/persistence contracts passed 14/14, focused option/schema
+  contracts passed 7/7, and the real Gemma frontend, persistent target, and expanded public Engine
+  tests passed against artifact SHA-256
+  `11d70c73f940930035516113a4b1cc25c685111692c4e9f2b345b430234ec83a`.
+- Phase 15 was built as Release for `sm_89` with GCC 13.3, CUDA 12.9, and 12 build jobs. The
+  1,024-token server smoke reported 16.3 GiB resident weights, 323,509,760 reserved runtime bytes,
+  and 7,042,957,312 bytes available after startup. These are integration observations; Phase 16
+  owns production context, throughput, memory, and comparison claims.
+
 ## Open blockers and limitations
 
-- The generated artifact remains local under `/dev/shm`; publication is a later product phase.
-- The correctness route is not yet published through `ninfer::Engine`; persistent continuation
-  qualification and product integration remain later phases.
+- The generated artifact remains local under `/dev/shm`; release packaging is part of Phase 17.
+- Production context/throughput sweeps, the public long-context retrieval matrix, and same-machine
+  comparison evidence remain Phase 16 work.
 - Full-checkpoint fixture regeneration requires restaging the two immutable source checkpoints;
   they are intentionally not committed to this repository.
-- The repository-documented Python 3.11 interpreter path is absent on this machine. The isolated
-  reference environment is reproducible through `uv` and the pinned requirements under
-  `tools/reference/gemma4_31b_it/`.
+- Python reference tooling, when needed, must use a dedicated NInfer environment and the pinned
+  requirements under `tools/reference/gemma4_31b_it/`; unrelated environments are out of scope.
 
 ## Reproduction
 

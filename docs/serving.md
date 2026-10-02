@@ -25,6 +25,22 @@ The command uses Qwen3.8-27B NVFP4. Each request has a 240,000-token logical cei
 240,000-token Main Text KV pool serves admitted requests; either request may use the full capacity
 when running alone, and two requests run concurrently when their complete reservations fit.
 
+For the text-only Gemma 4 31B IT target, use the same server and protocol routes with the target's
+required KV codec (and omit `--vision`):
+
+```bash
+./build/apps/ninfer-serve models/gemma4_31b_it.ninfer \
+  --host 127.0.0.1 --port 8080 \
+  --max-context 262144 --kv-capacity 262144 \
+  --max-concurrency 1 --kv-dtype rk4v4-e8 \
+  --spec mtp --draft-tokens 1 --lm-head-draft \
+  --slot-save-path var/gemma4-slots
+```
+
+The advertised model ID is `gemma4-31b-it`. Chat Completions, Responses, Anthropic Messages,
+streaming, health/metrics, and slot/cache controls all enter the same `ninfer::Engine`; media is
+rejected with the normal invalid-media client error before GPU execution.
+
 With `C=2` and two extra Device checkpoint slots, the process owns two active StateImage guarantees
 plus a global pool of two Device-resident checkpoints. Eight pinned Host State slots and 8 GiB of
 pinned Host KV retain inactive continuations under Device pressure. Active request capacity is two.
@@ -179,7 +195,8 @@ The endpoint supports:
 - nonnegative `max_completion_tokens` and the legacy `max_tokens` spelling; zero performs prompt
   processing without generation;
 - `temperature`, `top_p`, presence/frequency penalties, and signed integer `seed`;
-- the compatible `top_k` (`0..20`) and `min_p` (`0..1`) sampler extensions;
+- the compatible `top_k` (`0..64`, subject to the loaded target's executable cap) and `min_p`
+  (`0..1`) sampler extensions;
 - up to four non-empty stop strings, applied to both reasoning and answer output;
 - `n:1`, text-only `modalities`, and `response_format: {"type":"text"}`;
 - non-streaming responses and server-sent event streams;
@@ -877,7 +894,7 @@ The table lists executable defaults. The startup example selects a long-context 
 | `--cors` | permissive browser CORS headers | off |
 | `--temperature F` | process-level temperature override | unset |
 | `--top-p F` | process-level top-p override | unset |
-| `--top-k N` | process-level top-k override (`0..20`; zero selects the top-20 cap) | unset |
+| `--top-k N` | process-level top-k override (`0..64`; zero selects the loaded target's cap) | unset |
 | `--min-p F` | process-level min-p override | unset |
 | `--presence-penalty F` | process-level presence-penalty override | unset |
 | `--frequency-penalty F` | process-level frequency-penalty override | unset |

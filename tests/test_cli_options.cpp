@@ -109,9 +109,13 @@ int main() {
                                        "--log-level", "verbose"});
                       }),
                       "CLI accepted an unknown log level");
+    const ninfer::cli::Options top_k_64 =
+        parse({"ninfer-cli", "model.ninfer", "--prompt", "hello", "--top-k", "64"});
+    failures += check(top_k_64.sampling.top_k == 64,
+                      "CLI rejected the registered Gemma top_k boundary");
     failures +=
         check(rejects([] {
-                  (void)parse({"ninfer-cli", "model.ninfer", "--prompt", "hello", "--top-k", "21"});
+                  (void)parse({"ninfer-cli", "model.ninfer", "--prompt", "hello", "--top-k", "65"});
               }),
               "CLI accepted top_k beyond the executable candidate domain");
     return failures == 0 ? 0 : 1;

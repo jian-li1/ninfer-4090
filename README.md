@@ -13,10 +13,10 @@ Qwen3.6-35B-A3B target are inherited but untested on the RTX 4090.
 
 Compile-time registered identities include `qwen3.6-27b/groupwise-int`,
 `qwen3.8-27b/groupwise-int`, `qwen3.6-35b-a3b/groupwise-int`, and the text-only
-`gemma4-31b-it/groupwise-int` target under active product integration. Gemma currently has its
-native artifact, model, heterogeneous KV, compressed attention, and 262K target-only execution
-routes; its public Engine/server route remains gated until the later integration phase. All RTX
-4090 production builds use `CMAKE_CUDA_ARCHITECTURES=89`.
+`gemma4-31b-it/groupwise-int` target. Gemma uses the same public Engine, CLI, OpenAI-compatible,
+Responses, Anthropic, health/metrics, streaming, and persistent-slot routes as Qwen. It is
+text-only and rejects image/video input before model execution. All RTX 4090 production builds use
+`CMAKE_CUDA_ARCHITECTURES=89`.
 
 ## Measured results on the RTX 4090
 

@@ -432,6 +432,32 @@ int test_tokenizer_config_merge() {
     return failures;
 }
 
+int test_in_vocab_added_token_metadata() {
+    FrontendResources overlap = resources();
+    nlohmann::json tokenizer  = nlohmann::json::parse(overlap.tokenizer_json);
+    tokenizer["model"]["vocab"]["<eos>"] = 6;
+    overlap.tokenizer_json                 = tokenizer.dump();
+    overlap.tokenizer_config_json          = "{}";
+
+    const fi::Tokenizer accepted({.tokenizer_json         = overlap.tokenizer_json,
+                                  .tokenizer_config_json  = overlap.tokenizer_config_json,
+                                  .generation_config_json = overlap.generation_config_json});
+    int failures = check(accepted.encode("<eos>") == std::vector<int>{6} &&
+                             accepted.is_special_token(6),
+                         "exact in-vocabulary added-token metadata was not accepted");
+
+    tokenizer["added_tokens"][4]["content"] = "<conflicting-eos>";
+    overlap.tokenizer_json                    = tokenizer.dump();
+    failures += check(
+        throws_invalid_argument([&] {
+            fi::Tokenizer invalid({.tokenizer_json         = overlap.tokenizer_json,
+                                   .tokenizer_config_json  = overlap.tokenizer_config_json,
+                                   .generation_config_json = overlap.generation_config_json});
+        }),
+        "conflicting in-vocabulary added-token metadata was accepted");
+    return failures;
+}
+
 int test_bpe_merge_order() {
     const std::string tokenizer_json = nlohmann::json{
         {"model",
@@ -2363,6 +2389,7 @@ int main() {
     const Frontend frontend       = FrontendFactory::create_component(owned);
     int failures                  = 0;
     failures += test_tokenizer_config_merge();
+    failures += test_in_vocab_added_token_metadata();
     failures += test_bpe_merge_order();
     failures += test_boundary_aware_tokenization();
     failures += test_literal_added_token_provenance();

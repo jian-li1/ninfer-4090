@@ -7,6 +7,8 @@
 
 namespace ninfer::targets::gemma4_31b_it::detail {
 
+struct ModelWeights;
+
 struct PersistentRunOptions {
     std::uint32_t maximum_context = 262144;
     std::uint32_t prefill_tokens = 0;

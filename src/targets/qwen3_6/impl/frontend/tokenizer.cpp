@@ -217,20 +217,28 @@ load_added_tokens(const Json& root, std::string_view label, std::vector<std::str
         validate_supported_added_token(token, label);
         const auto index = static_cast<std::size_t>(token.id);
         if (occupied_vocab_ids.contains(token.id)) {
-            throw std::invalid_argument("field added_tokens overlaps existing id in " +
-                                        std::string(label));
+            const auto existing_content = occupied_vocab_tokens.find(token.content);
+            if (index >= id_to_token.size() || id_to_token[index] != token.content ||
+                existing_content == occupied_vocab_tokens.end() ||
+                existing_content->second != token.id) {
+                throw std::invalid_argument(
+                    "field added_tokens conflicts with existing vocabulary mapping in " +
+                    std::string(label));
+            }
         }
         if (!seen_added_ids.insert(token.id).second) {
             throw std::invalid_argument("field added_tokens has duplicate id in " +
                                         std::string(label));
         }
-        if (occupied_vocab_tokens.contains(token.content) ||
+        const auto occupied_content = occupied_vocab_tokens.find(token.content);
+        if ((occupied_content != occupied_vocab_tokens.end() &&
+             occupied_content->second != token.id) ||
             !seen_added_contents.emplace(token.content, token.id).second) {
             throw std::invalid_argument("field added_tokens has duplicate content mapping in " +
                                         std::string(label));
         }
         if (index >= id_to_token.size()) { id_to_token.resize(index + 1); }
-        id_to_token.at(static_cast<std::size_t>(token.id)) = token.content;
+        if (!occupied_vocab_ids.contains(token.id)) { id_to_token[index] = token.content; }
         tokens.push_back(std::move(token));
     }
     return tokens;
@@ -241,6 +249,10 @@ void merge_added_tokens_decoder(const Json& root, std::string_view label,
                                 const std::unordered_set<int>& occupied_vocab_ids,
                                 const std::unordered_map<std::string, int>& occupied_vocab_tokens,
                                 std::vector<AddedToken>& tokens) {
+    if (!root.is_object()) {
+        throw std::invalid_argument(std::string(label) + " root must be object");
+    }
+    if (!root.contains("added_tokens_decoder")) { return; }
     const Json& decoder = require_object_field(root, "added_tokens_decoder", label);
     std::unordered_map<int, std::size_t> token_by_id;
     std::unordered_map<std::string, int> token_by_content;
@@ -315,6 +327,36 @@ std::vector<int> load_default_stop_token_ids(std::string_view contents) {
     }
     throw std::invalid_argument(
         "field eos_token_id must be integer or array in generation_config.json");
+}
+
+bool uses_gemma_byte_fallback_codec(const Json& root, const Json& model,
+                                    std::string_view label) {
+    if (!model.contains("byte_fallback")) { return false; }
+    if (!model.at("byte_fallback").is_boolean()) {
+        throw std::invalid_argument("field model.byte_fallback must be boolean in " +
+                                    std::string(label));
+    }
+    if (!model.at("byte_fallback").get<bool>()) { return false; }
+
+    const Json& normalizer = require_object_field(root, "normalizer", label);
+    const Json& pattern    = require_object_field(normalizer, "pattern", label);
+    if (require_string_field(normalizer, "type", label) != "Replace" ||
+        require_string_field(pattern, "String", label) != " " ||
+        require_string_field(normalizer, "content", label) != "\xE2\x96\x81") {
+        throw std::invalid_argument("unsupported byte-fallback BPE normalizer in " +
+                                    std::string(label));
+    }
+    const Json& pre_tokenizer = require_object_field(root, "pre_tokenizer", label);
+    const Json& split_pattern = require_object_field(pre_tokenizer, "pattern", label);
+    if (require_string_field(pre_tokenizer, "type", label) != "Split" ||
+        require_string_field(split_pattern, "String", label) != " " ||
+        require_string_field(pre_tokenizer, "behavior", label) != "MergedWithPrevious" ||
+        !pre_tokenizer.contains("invert") || !pre_tokenizer.at("invert").is_boolean() ||
+        pre_tokenizer.at("invert").get<bool>()) {
+        throw std::invalid_argument("unsupported byte-fallback BPE pre-tokenizer in " +
+                                    std::string(label));
+    }
+    return true;
 }
 
 std::uint64_t merge_pair_key(int left, int right) noexcept {
@@ -395,6 +437,45 @@ std::string decode_byte_level_token(std::string_view token, int id) {
         bytes.push_back(byte->second);
     }
     return bytes;
+}
+
+int hexadecimal_nibble(char value) noexcept {
+    if (value >= '0' && value <= '9') { return value - '0'; }
+    if (value >= 'A' && value <= 'F') { return value - 'A' + 10; }
+    if (value >= 'a' && value <= 'f') { return value - 'a' + 10; }
+    return -1;
+}
+
+std::optional<unsigned char> byte_fallback_value(std::string_view token) noexcept {
+    if (token.size() != 6 || token[0] != '<' || token[1] != '0' || token[2] != 'x' ||
+        token[5] != '>') {
+        return std::nullopt;
+    }
+    const int high = hexadecimal_nibble(token[3]);
+    const int low  = hexadecimal_nibble(token[4]);
+    if (high < 0 || low < 0) { return std::nullopt; }
+    return static_cast<unsigned char>((high << 4) | low);
+}
+
+std::string decode_gemma_byte_fallback_token(std::string_view token) {
+    if (const auto byte = byte_fallback_value(token); byte.has_value()) {
+        return std::string(1, static_cast<char>(*byte));
+    }
+    constexpr std::string_view boundary = "\xE2\x96\x81";
+    std::string decoded;
+    decoded.reserve(token.size());
+    std::size_t begin = 0;
+    while (begin < token.size()) {
+        const std::size_t marker = token.find(boundary, begin);
+        if (marker == std::string_view::npos) {
+            decoded.append(token.substr(begin));
+            break;
+        }
+        decoded.append(token.substr(begin, marker - begin));
+        decoded.push_back(' ');
+        begin = marker + boundary.size();
+    }
+    return decoded;
 }
 
 std::array<std::string, 256> build_byte_level_encoder() {
@@ -548,6 +629,23 @@ std::array<int, 256> load_byte_token_ids(const std::unordered_map<std::string, i
     return ids;
 }
 
+std::array<int, 256>
+load_byte_fallback_token_ids(const std::unordered_map<std::string, int>& token_to_id) {
+    std::array<int, 256> ids;
+    ids.fill(-1);
+    constexpr char hex[] = "0123456789ABCDEF";
+    for (std::size_t byte = 0; byte < ids.size(); ++byte) {
+        std::array<char, 7> token{'<', '0', 'x', hex[byte >> 4U], hex[byte & 0xFU], '>', '\0'};
+        const auto found = token_to_id.find(token.data());
+        if (found == token_to_id.end()) {
+            throw std::invalid_argument("byte-fallback BPE vocabulary omits " +
+                                        std::string(token.data()));
+        }
+        ids[byte] = found->second;
+    }
+    return ids;
+}
+
 bool append_normalized_bpe_ids(std::vector<int>& ids, std::string_view normalized,
                                const BpeMergeTable& merge_rules,
                                const std::array<int, 256>& byte_token_ids, std::size_t max_tokens,
@@ -630,6 +728,99 @@ bool append_normalized_bpe_ids(std::vector<int>& ids, std::string_view normalize
                 BpeWordEnd{.normalized_offset = end, .token_frontier = ids.size()});
         }
         begin = end;
+    }
+    return true;
+}
+
+bool append_gemma_bpe_ids(std::vector<int>& ids, std::string_view text,
+                          const std::unordered_map<std::string, int>& token_to_id,
+                          const BpeMergeTable& merge_rules,
+                          const std::array<int, 256>& byte_fallback_ids,
+                          std::size_t max_tokens) {
+    if (text.empty()) { return true; }
+    if (ids.size() == max_tokens) { return false; }
+
+    // The pinned Gemma tokenizer performs one exact normalization: ASCII spaces become the
+    // SentencePiece boundary symbol. Its Split pre-tokenizer subsequently looks for ASCII spaces,
+    // so the normalized prompt reaches BPE as one segment.
+    constexpr std::string_view boundary = "\xE2\x96\x81";
+    std::string normalized;
+    normalized.reserve(text.size());
+    for (char byte : text) {
+        if (byte == ' ') {
+            normalized.append(boundary);
+        } else {
+            normalized.push_back(byte);
+        }
+    }
+
+    const std::vector<uni::CodepointSpan> codepoints =
+        uni::utf8_codepoints(normalized, "Tokenizer::encode Gemma input");
+    std::vector<BpeNode> nodes;
+    nodes.reserve(codepoints.size());
+    std::size_t offset = 0;
+    for (const uni::CodepointSpan& codepoint : codepoints) {
+        const std::string_view symbol(normalized.data() + offset, codepoint.length);
+        const auto found = token_to_id.find(std::string(symbol));
+        offset += codepoint.length;
+        if (found != token_to_id.end()) {
+            nodes.push_back(BpeNode{.symbol = found->second, .end = offset});
+            continue;
+        }
+        for (const unsigned char byte : symbol) {
+            nodes.push_back(BpeNode{.symbol = byte_fallback_ids[byte], .end = offset});
+        }
+    }
+    for (std::size_t index = 0; index < nodes.size(); ++index) {
+        nodes[index].previous = index == 0 ? -1 : static_cast<int>(index - 1);
+        nodes[index].next = index + 1 == nodes.size() ? -1 : static_cast<int>(index + 1);
+    }
+
+    std::priority_queue<BpeCandidate, std::vector<BpeCandidate>, LaterBpeCandidate> queue;
+    const auto push_candidate = [&](int left) {
+        if (left < 0 || !nodes[static_cast<std::size_t>(left)].live) { return; }
+        const int right = nodes[static_cast<std::size_t>(left)].next;
+        if (right < 0) { return; }
+        const BpeMergeEntry* rule =
+            merge_rules.find(merge_pair_key(nodes[static_cast<std::size_t>(left)].symbol,
+                                            nodes[static_cast<std::size_t>(right)].symbol));
+        if (rule == nullptr) { return; }
+        queue.push(BpeCandidate{
+            .rank             = rule->rank,
+            .left             = left,
+            .right            = right,
+            .result           = rule->result,
+            .left_generation  = nodes[static_cast<std::size_t>(left)].generation,
+            .right_generation = nodes[static_cast<std::size_t>(right)].generation,
+        });
+    };
+    for (std::size_t index = 0; index + 1 < nodes.size(); ++index) {
+        push_candidate(static_cast<int>(index));
+    }
+    while (!queue.empty()) {
+        const BpeCandidate candidate = queue.top();
+        queue.pop();
+        BpeNode& left  = nodes[static_cast<std::size_t>(candidate.left)];
+        BpeNode& right = nodes[static_cast<std::size_t>(candidate.right)];
+        if (!left.live || !right.live || left.next != candidate.right ||
+            left.generation != candidate.left_generation ||
+            right.generation != candidate.right_generation) {
+            continue;
+        }
+        left.symbol = candidate.result;
+        left.end    = right.end;
+        ++left.generation;
+        left.next  = right.next;
+        right.live = false;
+        ++right.generation;
+        if (left.next >= 0) { nodes[static_cast<std::size_t>(left.next)].previous = candidate.left; }
+        push_candidate(left.previous);
+        push_candidate(candidate.left);
+    }
+    for (int node = nodes.empty() ? -1 : 0; node >= 0;
+         node     = nodes[static_cast<std::size_t>(node)].next) {
+        ids.push_back(nodes[static_cast<std::size_t>(node)].symbol);
+        if (ids.size() == max_tokens) { return false; }
     }
     return true;
 }
@@ -735,6 +926,34 @@ bool append_ordinary_text(BoundaryEncodedText& encoded, std::string_view text,
     return true;
 }
 
+bool append_gemma_ordinary_text(BoundaryEncodedText& encoded, std::string_view text,
+                                std::size_t text_offset,
+                                std::span<const IndexedByteBoundary> boundaries,
+                                const std::unordered_map<std::string, int>& token_to_id,
+                                const BpeMergeTable& merge_rules,
+                                const std::array<int, 256>& byte_fallback_ids,
+                                std::size_t max_tokens) {
+    const std::size_t token_base = encoded.input_ids.size();
+    const bool complete = append_gemma_bpe_ids(encoded.input_ids, text, token_to_id, merge_rules,
+                                               byte_fallback_ids, max_tokens);
+    const std::size_t token_end = encoded.input_ids.size();
+    for (const IndexedByteBoundary boundary : boundaries) {
+        const std::size_t local = boundary.offset - text_offset;
+        if (local == 0 || local == text.size()) {
+            const std::size_t frontier = local == 0 ? token_base : token_end;
+            encoded.boundaries[boundary.index] =
+                TokenBoundaryResult{.exact_frontier = frontier, .stable_frontier = frontier};
+        } else {
+            // An internal marker can bisect a Unicode scalar or a merge. Gemma currently does not
+            // publish cache anchors from these markers, so preserve correctness conservatively.
+            encoded.boundaries[boundary.index] =
+                TokenBoundaryResult{.exact_frontier = std::nullopt,
+                                    .stable_frontier = token_base};
+        }
+    }
+    return complete;
+}
+
 } // namespace
 
 Tokenizer::Tokenizer(TokenizerResources resources) {
@@ -748,6 +967,9 @@ Tokenizer::Tokenizer(TokenizerResources resources) {
     const Json tokenizer_config =
         read_json_asset(resources.tokenizer_config_json, tokenizer_config_label);
     const Json& model = require_object_field(root, "model", tokenizer_label);
+    const bool gemma_byte_fallback =
+        uses_gemma_byte_fallback_codec(root, model, tokenizer_label);
+    codec_ = gemma_byte_fallback ? Codec::GemmaByteFallback : Codec::ByteLevel;
 
     VocabMetadata vocab_metadata = load_vocab(model, tokenizer_label);
     decoded_token_bytes_         = std::move(vocab_metadata.id_to_token);
@@ -779,12 +1001,18 @@ Tokenizer::Tokenizer(TokenizerResources resources) {
     }
     for (std::size_t index = 0; index < decoded_token_bytes_.size(); ++index) {
         if (valid_token_ids_[index] && !added_token_ids[index]) {
-            decoded_token_bytes_[index] =
-                decode_byte_level_token(decoded_token_bytes_[index], static_cast<int>(index));
+            decoded_token_bytes_[index] = gemma_byte_fallback
+                                              ? decode_gemma_byte_fallback_token(
+                                                    decoded_token_bytes_[index])
+                                              : decode_byte_level_token(
+                                                    decoded_token_bytes_[index],
+                                                    static_cast<int>(index));
         }
     }
     bpe_merge_rules_        = load_bpe_merge_rules(model, tokenizer_label, vocab_token_to_id_);
-    byte_token_ids_         = load_byte_token_ids(vocab_token_to_id_);
+    byte_token_ids_         = gemma_byte_fallback
+                                  ? load_byte_fallback_token_ids(vocab_token_to_id_)
+                                  : load_byte_token_ids(vocab_token_to_id_);
     default_stop_token_ids_ = load_default_stop_token_ids(resources.generation_config_json);
 }
 
@@ -827,11 +1055,15 @@ BoundaryEncodedText Tokenizer::encode_with_boundaries(
     };
     const auto append_ordinary = [&](std::size_t begin, std::size_t end) {
         const std::size_t request_end = boundary_end_through(end);
+        const auto requests = std::span<const IndexedByteBoundary>(boundaries)
+                                  .subspan(boundary_cursor, request_end - boundary_cursor);
         const bool complete =
-            append_ordinary_text(encoded, text.substr(begin, end - begin), begin,
-                                 std::span<const IndexedByteBoundary>(boundaries)
-                                     .subspan(boundary_cursor, request_end - boundary_cursor),
-                                 bpe_merge_rules_, byte_token_ids_, options.max_tokens);
+            codec_ == Codec::GemmaByteFallback
+                ? append_gemma_ordinary_text(encoded, text.substr(begin, end - begin), begin,
+                                             requests, vocab_token_to_id_, bpe_merge_rules_,
+                                             byte_token_ids_, options.max_tokens)
+                : append_ordinary_text(encoded, text.substr(begin, end - begin), begin, requests,
+                                       bpe_merge_rules_, byte_token_ids_, options.max_tokens);
         boundary_cursor = request_end;
         return complete;
     };

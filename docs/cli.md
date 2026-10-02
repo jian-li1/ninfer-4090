@@ -5,6 +5,20 @@ download an artifact using the [project README](../README.md) before following t
 
 The examples use Qwen3.8-27B NVFP4 with FP8 KV storage.
 
+Gemma 4 31B IT uses the same CLI with its registered heterogeneous E8 4-bit KV codec. The
+artifact is text-only; do not pass `--vision` or media message parts:
+
+```bash
+./build/apps/ninfer models/gemma4_31b_it.ninfer \
+  --prompt "Explain why speculative verification preserves the target distribution." \
+  --max-context 8192 --max-new 512 \
+  --kv-dtype rk4v4-e8 \
+  --spec mtp --draft-tokens 1 --lm-head-draft
+```
+
+Omit `--spec` for target-only residency. Gemma registers temperature `1.0`, top-p `0.95`, and
+top-k `64`; explicit CLI overrides and `--greedy` still win.
+
 ## Text input
 
 ```bash
@@ -215,7 +229,7 @@ The table lists executable defaults. The examples above select FP8 KV and MTP3.
 | `--greedy` | exact argmax decoding | off |
 | `--temperature F` | sampling temperature override | registered model/mode default |
 | `--top-p F` | nucleus-threshold override | registered model/mode default |
-| `--top-k N` | top-k-threshold override (`0..20`; zero selects the top-20 cap) | registered model/mode default |
+| `--top-k N` | top-k override (`0..64`; zero selects the loaded target's cap: 20 for Qwen, 64 for Gemma) | registered model/mode default |
 | `--min-p F` | min-p-threshold override | registered model/mode default |
 | `--presence-penalty F` | presence-penalty override | registered model/mode default |
 | `--frequency-penalty F` | frequency-penalty override | registered model/mode default (`0`) |
@@ -232,6 +246,8 @@ the loaded model and the rendered prompt mode. The current presets are:
 | Qwen3.8-27B | non-thinking | `0.7` | `0.80` | `20` | `0` | `1.5` |
 | Qwen3.6-35B-A3B | thinking | `1.0` | `0.95` | `20` | `0` | `1.5` |
 | Qwen3.6-35B-A3B | non-thinking | `0.7` | `0.80` | `20` | `0` | `1.5` |
+| Gemma 4 31B IT | thinking | `1.0` | `0.95` | `64` | `0` | `0` |
+| Gemma 4 31B IT | non-thinking | `1.0` | `0.95` | `64` | `0` | `0` |
 
 Frequency penalty is `0` in every registered preset. Task-specific profiles such as Qwen's
 precise-coding profile use explicit sampling overrides.

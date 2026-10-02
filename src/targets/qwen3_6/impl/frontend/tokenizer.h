@@ -153,6 +153,12 @@ public:
     [[nodiscard]] bool has_exact_token_domain(std::size_t size) const noexcept;
 
 private:
+    enum class Codec : std::uint8_t {
+        ByteLevel,
+        GemmaByteFallback,
+    };
+
+    Codec codec_ = Codec::ByteLevel;
     std::vector<std::string> decoded_token_bytes_;
     std::vector<bool> valid_token_ids_;
     std::vector<bool> special_token_ids_;

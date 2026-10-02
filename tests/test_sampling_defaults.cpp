@@ -2,6 +2,9 @@
 
 #include <ninfer/targets/qwen3_6_27b/package.h>
 #include <ninfer/targets/qwen3_6_35b_a3b/package.h>
+#if NINFER_BUILD_GEMMA4_31B_IT
+#include <ninfer/targets/gemma4_31b_it/package.h>
+#endif
 
 #include <cmath>
 #include <iostream>
@@ -49,6 +52,10 @@ int main() {
     const ninfer::ModelSamplingDefaults qwen3_8 =
         Dense27::sampling_defaults(Dense27::qwen3_8_model_id);
     const ninfer::ModelSamplingDefaults qwen3_6_35 = Moe35::sampling_defaults(Moe35::model_id);
+#if NINFER_BUILD_GEMMA4_31B_IT
+    using Gemma31 = ninfer::targets::gemma4_31b_it::Package;
+    const ninfer::ModelSamplingDefaults gemma = Gemma31::sampling_defaults(Gemma31::model_id);
+#endif
 
     const ninfer::SamplingPreset dense_thinking{
         .temperature = 1.0F, .top_k = 20, .top_p = 0.95F, .min_p = 0.0F};
@@ -77,6 +84,18 @@ int main() {
     failures += check(same_preset(qwen3_6_35.thinking, moe_thinking) &&
                           same_preset(qwen3_6_35.non_thinking, dense_non_thinking),
                       "Qwen3.6-35B-A3B defaults mismatch");
+#if NINFER_BUILD_GEMMA4_31B_IT
+    const ninfer::SamplingPreset gemma_expected{
+        .temperature = 1.0F, .top_k = 64, .top_p = 0.95F, .min_p = 0.0F};
+    failures += check(same_preset(gemma.thinking, gemma_expected) &&
+                          same_preset(gemma.non_thinking, gemma_expected) &&
+                          gemma.maximum_top_k == 64,
+                      "Gemma 4 31B official sampling defaults mismatch");
+    const auto gemma_resolved = ninfer::runtime::resolve_sampling(
+        gemma, ninfer::SamplingMode::Thinking, ninfer::SamplingOverrides{});
+    failures += check(gemma_resolved.top_k == 64,
+                      "Gemma 4 31B default top_k was not executable");
+#endif
     failures += check(throws_runtime([] { (void)Dense27::sampling_defaults("unknown"); }),
                       "unknown model received dense-27B sampling defaults");
 
@@ -112,6 +131,18 @@ int main() {
                               qwen3_8, ninfer::SamplingMode::Thinking, overrides);
                       }),
                       "top_k beyond the executable candidate domain was accepted");
+#if NINFER_BUILD_GEMMA4_31B_IT
+    overrides.top_k = 64;
+    failures += check(ninfer::runtime::resolve_sampling(
+                          gemma, ninfer::SamplingMode::Thinking, overrides).top_k == 64,
+                      "Gemma rejected its official top_k domain");
+    overrides.top_k = 65;
+    failures += check(throws_invalid([&] {
+                          (void)ninfer::runtime::resolve_sampling(
+                              gemma, ninfer::SamplingMode::Thinking, overrides);
+                      }),
+                      "Gemma accepted top_k beyond its executable domain");
+#endif
     overrides.top_k = 0;
 
     overrides.temperature = std::numeric_limits<float>::quiet_NaN();

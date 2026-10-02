@@ -26,6 +26,23 @@ Expected stdout is exactly `42`. `--no-thinking --greedy` is the normal comparis
 cases. Reasoning, progress, timings, memory, and MTP statistics are written to stderr; answer content
 is written to stdout.
 
+The text fixtures also exercise Gemma 4 31B IT through the public CLI. Gemma owns a different
+template/tokenizer and therefore does not inherit the Qwen token counts or frozen output oracle:
+
+```bash
+GEMMA=models/gemma4_31b_it.ninfer
+$CLI "$GEMMA" --messages examples/cli/messages/text_chat_history.json \
+  --max-context 4096 --kv-dtype rk4v4-e8 \
+  --no-thinking --greedy --max-new 64
+
+$CLI "$GEMMA" --messages examples/cli/messages/text_code_review.json \
+  --max-context 8192 --kv-dtype rk4v4-e8 \
+  --spec mtp --draft-tokens 1 --lm-head-draft --max-new 256
+```
+
+Gemma is text-only in this product target, so the image/video fixtures must fail clearly rather
+than being silently reduced to text.
+
 ## Send the same fixture to Serve
 
 `send_to_serve` submits one CLI messages file to an already-running OpenAI Chat Completions

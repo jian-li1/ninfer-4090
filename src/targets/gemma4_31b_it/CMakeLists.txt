@@ -1,6 +1,8 @@
 target_sources(ninfer_engine PRIVATE
+  impl/package.cpp
   impl/load/bindings.cpp
   impl/runtime/kv_groups.cpp
+  impl/runtime/runtime.cpp
   impl/runtime/persistent_model.cpp
   impl/runtime/reference_model.cpp
   impl/runtime/reference_kernels.cu)

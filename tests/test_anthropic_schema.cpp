@@ -108,7 +108,7 @@ int test_envelope_and_field_policy() {
     body["stream"]        = true;
     body["temperature"]   = 0.7;
     body["top_p"]         = 0.8;
-    body["top_k"]         = 20;
+    body["top_k"]         = 64;
     body["metadata"]      = Json{{"user_id", "u"}};
     body["service_tier"]  = "auto";
     body["inference_geo"] = "anywhere";
@@ -122,7 +122,7 @@ int test_envelope_and_field_policy() {
               "Messages envelope fields were not preserved");
     failures += check(request.generation.sampling.temperature == 0.7 &&
                           request.generation.sampling.top_p == 0.8 &&
-                          request.generation.sampling.top_k == 20 &&
+                          request.generation.sampling.top_k == 64 &&
                           request.generation.reasoning_effort == RequestedReasoningEffort::Low,
                       "executable Anthropic generation fields were not lowered");
 
@@ -139,7 +139,7 @@ int test_envelope_and_field_policy() {
     failures += check(api_param([&] { (void)parse(body); }) == "temperature",
                       "Anthropic temperature range was not enforced");
     body          = base_request();
-    body["top_k"] = 21;
+    body["top_k"] = 65;
     failures += check(api_param([&] { (void)parse(body); }) == "top_k",
                       "Engine top_k range was not enforced");
     body                  = base_request();

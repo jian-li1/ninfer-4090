@@ -206,6 +206,10 @@ enum class SamplingMode : std::uint8_t {
     NonThinking,
 };
 
+// Largest registered public sampler domain. Individual targets publish a narrower executable
+// cap through ModelSamplingDefaults when their production sampler is more constrained.
+inline constexpr std::int32_t kMaximumSamplingTopK = 64;
+
 // Immutable model-owned values used when a request does not override a sampling field. Seed is
 // deliberately excluded: it is an execution choice rather than a model recommendation.
 struct SamplingPreset {
@@ -220,6 +224,7 @@ struct SamplingPreset {
 struct ModelSamplingDefaults {
     SamplingPreset thinking;
     SamplingPreset non_thinking;
+    std::int32_t maximum_top_k = 20;
 
     [[nodiscard]] constexpr const SamplingPreset& for_mode(SamplingMode mode) const noexcept {
         return mode == SamplingMode::Thinking ? thinking : non_thinking;

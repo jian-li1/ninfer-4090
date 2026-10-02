@@ -85,7 +85,7 @@ int test_request_envelope_and_sampling() {
     body["presence_penalty"]      = 0.3;
     body["frequency_penalty"]     = -0.2;
     body["seed"]                  = -1;
-    body["top_k"]                 = 17;
+    body["top_k"]                 = 64;
     body["min_p"]                 = 0.05;
     body["timings_per_token"]     = true;
     body["return_progress"]       = true;
@@ -100,11 +100,11 @@ int test_request_envelope_and_sampling() {
     failures += check(request.generation.sampling.seed == std::numeric_limits<std::uint64_t>::max(),
                       "signed seed maps modulo 2^64");
     failures +=
-        check(request.generation.sampling.top_k == 17 && request.generation.sampling.min_p == 0.05,
+        check(request.generation.sampling.top_k == 64 && request.generation.sampling.min_p == 0.05,
               "compatible sampler extensions parsed");
     const ninfer::RequestOptions translated = options(request.generation);
     failures +=
-        check(translated.execution.sampling.top_k == 17, "top_k reaches Engine request options");
+        check(translated.execution.sampling.top_k == 64, "top_k reaches Engine request options");
     failures +=
         check(translated.execution.sampling.min_p && *translated.execution.sampling.min_p == 0.05F,
               "min_p reaches Engine request options");
@@ -612,7 +612,7 @@ int test_stops_and_ranges() {
         check(api_error([&] { (void)parse(body); }).param == "stop", "empty stop string rejected");
 
     body                                  = base_request();
-    body["top_k"]                         = 21;
+    body["top_k"]                         = 65;
     const GenerationRequest invalid_top_k = parse(body).generation;
     failures += check(api_error([&] { (void)options(invalid_top_k); }).param == "top_k",
                       "Engine translator owns sampler value range");

@@ -192,8 +192,22 @@ if(NINFER_BUILD_GEMMA4_31B_IT)
     SOURCES targets/gemma4_31b_it/test_config.cpp
     LIBRARIES ninfer_engine)
   target_include_directories(ninfer_gemma4_31b_it_config_test PRIVATE
+    ${PROJECT_SOURCE_DIR}/src/targets/qwen3_6/export
     ${PROJECT_SOURCE_DIR}/src/targets/gemma4/export
     ${PROJECT_SOURCE_DIR}/src/targets/gemma4_31b_it/export)
+  target_link_libraries(ninfer_gemma4_31b_it_config_test PRIVATE CUDA::cudart)
+  ninfer_add_test(ninfer_gemma4_frontend_test
+    SOURCES targets/gemma4_31b_it/test_frontend.cpp
+    LIBRARIES ninfer_engine)
+  target_include_directories(ninfer_gemma4_frontend_test PRIVATE
+    ${PROJECT_SOURCE_DIR}/src/targets/qwen3_6/export
+    ${PROJECT_SOURCE_DIR}/src/targets/gemma4/export)
+  target_link_libraries(ninfer_gemma4_frontend_test PRIVATE CUDA::cudart)
+  set_tests_properties(ninfer_gemma4_frontend_test PROPERTIES SKIP_RETURN_CODE 77)
+  ninfer_add_test(ninfer_gemma4_engine_real_test
+    SOURCES targets/gemma4_31b_it/test_engine_real.cpp
+    LIBRARIES ninfer_engine)
+  set_tests_properties(ninfer_gemma4_engine_real_test PROPERTIES SKIP_RETURN_CODE 77)
   ninfer_add_test(ninfer_gemma4_31b_it_artifact_bindings_test
     SOURCES targets/gemma4_31b_it/test_artifact_bindings.cpp
     LIBRARIES ninfer_engine)
