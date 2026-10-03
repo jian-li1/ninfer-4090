@@ -1,6 +1,7 @@
 # NInfer-4090
 
-NInfer-4090 runs **Qwen3.8-27B** on one 24 GB NVIDIA GeForce RTX 4090. It is an `sm_89` port of
+NInfer-4090 runs **Qwen3.8-27B** and text-only **Gemma 4 31B IT** on one 24 GB NVIDIA GeForce RTX
+4090. It is an `sm_89` port of
 [NInfer-3090](https://github.com/Don-Chad/ninfer-3090), which derives from
 [Neroued/ninfer](https://github.com/Neroued/ninfer), a specialized C++20/CUDA inference engine.
 The engine loads the official groupwise `.ninfer` artifact, serves OpenAI- and
@@ -17,6 +18,13 @@ Compile-time registered identities include `qwen3.6-27b/groupwise-int`,
 Responses, Anthropic, health/metrics, streaming, and persistent-slot routes as Qwen. It is
 text-only and rejects image/video input before model execution. All RTX 4090 production builds use
 `CMAKE_CUDA_ARCHITECTURES=89`.
+
+For Gemma, follow the complete [RTX 4090 guide](docs/gemma4-31b-4090.md) to acquire the pinned
+checkpoints, convert the native target-plus-assistant artifact, build, test, benchmark, and serve
+the full 262,144-token profile. Its measured memory, retrieval, decode/MTP, and same-machine
+llama.cpp results are in the
+[performance qualification](docs/benchmarks/gemma4-31b-4090-performance.md). Gemma vision is not
+implemented and is not part of the published memory profile.
 
 ## Measured results on the RTX 4090
 

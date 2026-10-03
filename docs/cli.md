@@ -13,11 +13,13 @@ artifact is text-only; do not pass `--vision` or media message parts:
   --prompt "Explain why speculative verification preserves the target distribution." \
   --max-context 8192 --max-new 512 \
   --kv-dtype rk4v4-e8 \
-  --spec mtp --draft-tokens 1 --lm-head-draft
+  --spec mtp --draft-tokens 1
 ```
 
 Omit `--spec` for target-only residency. Gemma registers temperature `1.0`, top-p `0.95`, and
 top-k `64`; explicit CLI overrides and `--greedy` still win.
+The complete conversion, build, test, full-context, and troubleshooting workflow is in the
+[Gemma 4 31B RTX 4090 guide](gemma4-31b-4090.md).
 
 ## Text input
 
@@ -214,7 +216,7 @@ The table lists executable defaults. The examples above select FP8 KV and MTP3.
 |---|---|---:|
 | `--max-context N` | per-sequence logical context ceiling | `2048` |
 | `--kv-capacity N\|auto` | explicit shared Main Text KV capacity, or maximize it from remaining GPU memory; omitted means `--max-context` | `2048` |
-| `--prefill-chunk N` | positive text-prefill chunk, in multiples of 128 | `1024` |
+| `--prefill-chunk N` | positive target-validated text-prefill chunk; Gemma accepts up to 2048 | `1024` |
 | `--max-new N` | requested output-token limit | `128` |
 | `--device N` | CUDA device index | `0` |
 | `--kv-dtype bf16\|int8\|fp8\|nvfp4\|k8v4\|rk8v4\|rk4v4\|rk4v4-e8\|rk2v4-e8` | KV-cache storage; rotated and E8-lattice modes trade key/value precision for capacity; `nvfp4` and `k8v4` are upstream sm_120a modes, not available on the RTX 4090 | `bf16` |
@@ -285,6 +287,10 @@ and CUDA Graph allowance, while leaving the default 1 GiB automatic headroom
 unallocated. It does not probe allocations or resize the pool at request time. The single-request
 CLI normally leaves the option omitted so it follows
 `--max-context`; the distinction matters primarily to a concurrent Engine or server.
+
+Gemma 4 31B registers only `rk4v4-e8`; selecting another KV mode fails at startup. Its two
+heterogeneous groups still use distinct D256/H16 and D512/H4 physical descriptors under that one
+public codec name.
 
 At Engine startup NInfer reserves model weights, persistent sequence state, one phase-reused
 Program workspace, and a separate CUDA Graph driver allowance. With Vision enabled, that one

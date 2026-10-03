@@ -349,9 +349,31 @@ Phase 0 full-suite result remains the regression baseline; all Phase 2 affected 
   profiler attribution, and rejected tuning candidates are recorded in the
   [Phase 16 performance report](../benchmarks/gemma4-31b-4090-performance.md).
 
+## Phase 17 record
+
+- Published the [single-RTX-4090 user guide](../gemma4-31b-4090.md) with exact pinned source
+  revisions, isolated Python 3.11 conversion, native and Docker builds, real-artifact verification,
+  CLI, full-262K serving, API smoke, benchmark, memory, release-manifest, and troubleshooting
+  workflows.
+- Consolidated current production execution in the active model/artifact/execution authorities and
+  added narrow references for the [heterogeneous KV layout](../maintainer/gemma4-kv-layout.md) and
+  [official assistant/MTP path](../maintainer/gemma4-mtp.md). Generic Engine, resource-manager,
+  page, and protocol ownership remains in the existing common references.
+- Updated README, the documentation map, CLI/server commands, benchmark schema documentation, and
+  test documentation. Gemma production commands use the assistant's native tied proposal head and
+  no longer imply that the Qwen optimized proposal-head selector is required.
+- Release packaging consists of the native `.ninfer` artifact plus its generated
+  `.conversion.json` manifest. The manifest records immutable source and artifact hashes, converter
+  arguments/environment, object inventory, transformations, and quantization evidence; a
+  target-only artifact remains a supported no-MTP package.
+- Phase 18 multimodal/vision work is intentionally omitted. The registered target and its published
+  memory/performance profile remain text-only.
+
 ## Open blockers and limitations
 
-- The generated artifact remains local under `/dev/shm`; release packaging is part of Phase 17.
+- No prebuilt Gemma `.ninfer` download is published by this repository. The supported release path
+  is deterministic local conversion of the two pinned public checkpoints, retaining the generated
+  conversion manifest beside the artifact.
 - The 64K and 128K cold-prefill comparison goals remain unmet. Profiling identifies the Q4/A16
   linear route and D512 global attention as the dominant opportunity; a future Q4 activation-
   quantized route requires its own numerical and end-to-end qualification.
@@ -359,6 +381,8 @@ Phase 0 full-suite result remains the regression baseline; all Phase 2 affected 
   they are intentionally not committed to this repository.
 - Python reference tooling, when needed, must use a dedicated NInfer environment and the pinned
   requirements under `tools/reference/gemma4_31b_it/`; unrelated environments are out of scope.
+- Multimodal/vision support is not implemented by explicit product decision; media is rejected
+  before model execution and consumes no Gemma residency.
 
 ## Reproduction
 

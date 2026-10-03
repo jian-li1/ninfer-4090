@@ -43,18 +43,22 @@ decode graph before warmups and measured repetitions.
 ```text
 ninfer_bench --weights <artifact.ninfer>
           [--corpus <ids-path>]
+          [--cycle-corpus]
           [-p, --n-prompt <list>]
           [-n, --n-gen <list>]
           [-pg, --prompt-gen <P,G;P,G...>]
           [-r, --repetitions <n>] [--warmup <n>]
           [--max-ctx <tokens>] [--prefill-chunk <tokens>]
-          [--kv-dtype <bf16|int8|fp8|nvfp4|k8v4>]
+          [--kv-dtype <bf16|int8|fp8|nvfp4|k8v4|rk8v4|rk4v4|rk4v4-e8|rk2v4-e8>]
           [--spec <mtp|dflash|dflash2> --draft-tokens <n>] [--lm-head-draft]
           [--device <id>] [--no-cuda-graph] [--profile-measured]
           [-o, --output <table|json|csv>] [--output-file <path>]
 ```
 
 With no `-p`, `-n`, or `-pg`, the matrix is `pp512` and `tg128`.
+`--cycle-corpus` repeats the exact token-ID corpus to reach prompt lengths beyond the source file
+and records that choice in the report. It is intended for deterministic throughput depth sweeps,
+not semantic retrieval claims.
 
 Example:
 
@@ -82,8 +86,9 @@ For a DFlash2 companion artifact:
 ```
 
 The benchmark disables context retention because every repetition is an independent root request.
-Schema v14 records `speculative_backend`, `draft_tokens`, and the proposal head independently;
-JSON and CSV identify DFlash2 explicitly. MTP alone reserves its extra lookahead KV margin.
+Schema v15 records `speculative_backend`, `draft_tokens`, proposal head, and cycled-corpus status
+independently; JSON and CSV identify DFlash2 explicitly. MTP alone reserves its extra lookahead KV
+margin.
 
 ## Context-cost calibration
 

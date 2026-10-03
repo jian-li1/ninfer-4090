@@ -39,8 +39,12 @@ benchmark-report, and external protocol behavior. Repository verification princi
   from the human-readable record body;
 - `test_http_error_handler.cpp` — protocol-shaped payload-limit errors and application-error
   preservation;
-- `test_ninfer_bench_support.cpp` — product benchmark CLI, timing boundary, and schema-v14 reports;
-- `test_bench_matrix.py` — schema-v14 report consumption by the Python matrix summarizer;
+- `test_ninfer_bench_support.cpp` — product benchmark CLI, timing boundary, and schema-v15 reports;
+- `test_bench_matrix.py` — maintained benchmark-report consumption by the Python matrix summarizer;
+- `targets/gemma4_31b_it/` — registered-target configuration, frontend, artifact binding, public
+  Engine, heterogeneous continuation, reference-prefix, and persistent-route behavior;
+- `ops/test_gemma4_*` — independent codec, D256 sliding-attention, and D512 global-attention
+  numerical qualification;
 - `test_serve_corpus.py` — current serving request-log identity at the measurement consumer;
 - device/tensor/arena tests — reusable lower-component behavior; KV tests cover the core physical
   container, family runtime tests cover dimension-driven GDN storage/view mechanics, and Op tests

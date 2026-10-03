@@ -5,12 +5,12 @@ import json
 from tools.bench.run_ninfer_bench_matrix import BenchCase, report_rows
 
 
-def test_schema_v14_report_is_flattened_for_matrix_summary(tmp_path) -> None:
+def test_schema_v15_report_is_flattened_for_matrix_summary(tmp_path) -> None:
     report_path = tmp_path / "report.json"
     report_path.write_text(
         json.dumps(
             {
-                "schema_version": 14,
+                "schema_version": 15,
                 "artifact_type": "ninfer_bench_report",
                 "tool": "ninfer_bench",
                 "artifact": {"path": "model.ninfer"},
@@ -47,6 +47,7 @@ def test_schema_v14_report_is_flattened_for_matrix_summary(tmp_path) -> None:
                     "decode_graph_prime": {"primed": True, "output_tokens": 13},
                     "repetitions": 2,
                     "warmup": 1,
+                    "cycle_corpus": False,
                 },
                 "tests": [
                     {
@@ -109,6 +110,7 @@ def test_schema_v14_report_is_flattened_for_matrix_summary(tmp_path) -> None:
     assert row["cuda_graph_allowance_bytes"] == 150_000_000
     assert row["workspace_peak_bytes"] == 1_048_576
     assert row["workspace_allocator_peak_bytes"] == 524_288
+    assert row["cycle_corpus"] is False
     assert row["decode_output_tok_s_mean"] == 4.5
     assert row["decode_engine_tok_s_mean"] == 7.5
     assert row["spec_fallback_steps"] == 3

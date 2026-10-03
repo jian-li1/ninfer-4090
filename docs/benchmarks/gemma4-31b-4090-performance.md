@@ -22,10 +22,9 @@ activation-quantized route.
 
 ## Provenance
 
-Measurements were collected on 2026-10-02 from the Phase 16 source revision: the commit containing
-this report, whose parent is `5efa86f1` (`feat(serve): complete gemma4 public product integration`).
-This definition remains exact if the branch is rebased; `git show --format=%H --no-patch` at this
-document's revision identifies the measured commit.
+Measurements were collected on 2026-10-02 from Phase 16 commit `be6896fa`
+(`bench: qualify gemma4 31b on rtx4090`), whose parent is `5efa86f1`
+(`feat(serve): complete gemma4 public product integration`).
 
 | Item | Qualified value |
 |---|---|

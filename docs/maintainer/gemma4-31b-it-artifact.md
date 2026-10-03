@@ -9,10 +9,10 @@ product load path.
 
 The immutable sources and checkpoint hashes are recorded in
 [Gemma 4 31B IT text model](gemma4-31b-it-model.md). Generate the complete target-plus-assistant
-artifact with Python 3.11:
+artifact with the pinned isolated Python 3.11 environment:
 
 ```bash
-python -m tools.convert.gemma4_31b_it.convert \
+/tmp/ninfer-gemma4-convert/bin/python -m tools.convert.gemma4_31b_it.convert \
   --model /path/to/gemma-4-31B-it-qat-w4a16-ct \
   --assistant /path/to/gemma-4-31B-it-assistant \
   --out /dev/shm/gemma4_31b_it.ninfer \
@@ -25,6 +25,11 @@ unclassified text tensor. It emits `<artifact>.conversion.json`; its `objects` a
 expanded per-object table, including source names, runtime name, shape, format, layout, transform,
 payload bytes, and payload SHA-256. That generated table is authoritative for checksums because a
 checksum necessarily belongs to one artifact instance rather than to this source-level contract.
+Distribute the `.ninfer` and its `.conversion.json` report together. The report is the release
+manifest: it binds source revisions and hashes, converter arguments, environment, artifact hash,
+object inventory, transformations, and representative quantization error.
+The complete source-acquisition, environment, conversion, and verification workflow is in the
+[Gemma 4 31B RTX 4090 guide](../gemma4-31b-4090.md#convert-the-native-artifact).
 
 ## Closed object inventory
 

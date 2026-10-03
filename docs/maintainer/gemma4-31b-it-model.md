@@ -1,6 +1,6 @@
 # Gemma 4 31B IT text model
 
-This is the semantic authority for the planned text-only target
+This is the semantic authority for the registered text-only target
 `gemma4-31b-it/groupwise-int`. It records the exact upstream sources and mathematical
 boundaries that conversion, Ops, the family Program, and the assistant must preserve. Vision,
 audio, and video are outside the current product scope.
@@ -99,9 +99,9 @@ For the first assisted round the target runs normally. For each proposed token, 
 7. independently applies the assistant's tied 1,024-wide LM head to the assistant body output and
    samples the next draft token.
 
-The assistant position ID remains `input_length - 1` throughout one draft proposal loop. The
-default upstream proposal budget is six; NInfer qualifies one token first and tunes two through six
-only after MTP1 parity.
+The assistant position ID remains `input_length - 1` throughout one draft proposal loop. NInfer
+supports one through six proposals and selects one for production. Execution, graph, transaction,
+memory, and selection details are defined in [Gemma 4 MTP execution](gemma4-mtp.md).
 
 ## Quantized checkpoint
 

@@ -1,9 +1,9 @@
 # Gemma 4 31B IT text execution
 
-The Phase 4 correctness route is a target-owned C++/CUDA implementation over the registered
-`gemma4-31b-it/groupwise-int` `.ninfer` artifact. It accepts 1–4096 token IDs and executes the
-complete 60-layer text model. It does not expose a Python inference route and does not acquire or
-materialize multimodal inputs.
+This document defines the production C++/CUDA schedule for the registered text-only
+`gemma4-31b-it/groupwise-int` `.ninfer` target. CLI, serving, causal scoring, benchmarks, and
+continuations all enter the public `ninfer::Engine`. There is no Python or target-private product
+inference route, and the target does not acquire or materialize multimodal inputs.
 
 ## Mathematical schedule
 
@@ -20,33 +20,38 @@ post-attention and post-feedforward normalization in the source ordering, follow
 scalar. The final vocabulary projection reuses the FP8 embedding object and applies
 `30 * tanh(logit / 30)` before greedy selection.
 
-## Short-context state and persistent-cache compatibility
+## Persistent production schedule
 
-The Phase 4 correctness route still materializes each layer's current prefix K/V in transient BF16
-storage and reruns the bounded prefix. Phase 5 added the persistent representation used by the
-optimized execution route: a 50-layer D256/H16 modulo-17 sliding group and a 10-layer D512/H4
-full-history group. Both use the target-neutral grouped transaction layer over the same physical
-page primitives as the inherited Qwen persistent cache. The mathematical prefix route remains the
-oracle until the Phase 7/8 attention leaves consume these views.
+One Program instance owns one target binding, its startup-fixed lanes, one heterogeneous cache,
+one phase-reused workspace, and its CUDA Graph instances. It shares no mutable state or device
+allocation with another Program.
 
-Group transactions expose stable staging block tables, copy a partial tail before mutation, and
-atomically advance both groups. Reject leaves committed mappings untouched. Checkpoints clone both
-group payloads and can restore a wrapped local position into either lane before appending. At 32K,
-the local group remains 16–17 resident page groups while the global group reaches 512. The current
-BF16 one-lane/2048-token-transaction plan reserves 5,315,870,720 payload bytes; Phase 6 replaces
-those planes with the selected E8 profile before deep-context production execution.
+The model admits 1–2,048 tokens per execution chunk; production prefill uses 1,024. Q4 projections
+and MLPs run across the wide chunk, while each layer publishes K/V and evaluates attention
+sequentially in 64-token physical-page tiles. This preserves causal visibility, local-ring eviction,
+partial-tail copy-on-write, and the common local/global frontier. Intermediate chunks omit logits
+and sampling; only the final prompt chunk computes the next-token distribution.
 
-At 4096 tokens the conservative transient workspace estimate is below 1.5 GiB. Together with the
-15.806 GiB resident target weights, the Phase 4 route remains within a 24 GiB RTX 4090 planning
-envelope. This is a correctness capacity statement, not a performance result.
+Sliding D256/H32/KV16 attention consumes the 1,024-token ring directly. Global D512/H32/KV4 uses
+the prompt kernel through 32K visible keys, then split T6 tensor-core tiles and FP32 reduction at
+deeper prefixes. T=1 decode and T=2..7 verifier columns use separately qualified schedules.
+Absolute positions drive both RoPE regimes and cache publication.
+
+Startup derives activation capacity from the same allocation recipe used by execution and takes
+the maximum of mutually exclusive prefill, final-logit, and MTP-verifier shapes. At 262,144 tokens,
+target-only residency is 16,971,062,784 weight bytes, 6,180,570,112 sequence bytes, and
+312,532,992 workspace bytes, leaving 1,353,383,936 bytes after startup on the qualified RTX 4090.
+Requests perform no project-owned device allocation or workspace growth.
+
+The group geometry, RK4V4-E8 planes, transaction invariants, and continuation encoding are defined
+in [Gemma 4 heterogeneous KV layout](gemma4-kv-layout.md).
 
 ## Persistent decode graph
 
-The optimized persistent route streams page-local prefill chunks through the 60-layer schedule and
-uses the heterogeneous RK4V4-E8 cache as the semantic history boundary. Its T=1 decode may execute
-eagerly or through one CUDA Graph executable. Input token and absolute position are graph-safe
-device parameters. QKV preparation reads that position directly, preserving full and proportional
-RoPE across page boundaries and ring reuse.
+T=1 decode may execute eagerly or through one CUDA Graph executable. Input token, absolute
+position, row, and stable transaction tables are graph-safe device parameters. QKV preparation
+reads the explicit position, preserving full and proportional RoPE across page boundaries and ring
+reuse.
 
 Each cache transaction prepares stable local/global staging tables before graph replay. Attention
 kernels use those tables and the explicit position; they do not infer the transaction target from
@@ -55,10 +60,11 @@ The graph uses the maximum registered full-attention envelope, so global-prefix 
 ring wrap preserve one topology and require no update or recapture. Prefill and parity dumps remain
 eager.
 
-The complete 262K graph profile reuses the existing activation and attention workspaces, adds an
-8 MiB measured graph allocation after warmup, and retains 1.653 GiB free on the RTX 4090. Exact
-correctness, state-transition, memory, and whole-model latency evidence is recorded in
-[the Phase 11 qualification](../benchmarks/gemma4-phase11-cuda-graphs.md).
+MTP1 owns a separate verifier graph; widths 2–6 use the common eager path. Exact graph/eager token
+and frontier equality is maintained for ordinary and speculative execution. Historical graph
+qualification is recorded in
+[the Phase 11 record](../benchmarks/gemma4-phase11-cuda-graphs.md); current whole-profile memory is
+in the [production performance report](../benchmarks/gemma4-31b-4090-performance.md).
 
 ## Persistent continuation
 
@@ -78,10 +84,10 @@ absolute logical blocks rather than ring slots, so restoring an anchor beyond po
 cannot reuse stale local KV. Core owns only logical-order host page transfer; this framing,
 identity, anchor selection, and global-prefix reconstruction remain Gemma-family policy.
 
-The long-context benchmark exposes explicit `--save-continuation PATH`,
+The long-context diagnostic exposes explicit `--save-continuation PATH`,
 `--restore-continuation PATH`, and repeatable `--anchor N` controls for cross-process
-qualification. The Engine/server publication tier consumes the same target semantics in the next
-integration phase. Exact endpoint, edited-anchor, restart, validation, latency, and footprint
+qualification. The public Engine, server slot files, and transparent persistent cache consume the
+same target semantics. Exact endpoint, edited-anchor, restart, validation, latency, and footprint
 evidence is recorded in
 [the Phase 14 qualification](../benchmarks/gemma4-phase14-continuation.md).
 
@@ -98,10 +104,11 @@ plus the target correction. Q4, full attention, and sliding attention preserve o
 arithmetic for every verifier column, so batching cannot alter greedy output.
 
 Production selects one draft and captures only that verifier as a CUDA Graph; reservation and
-commit remain outside capture. Widths 2-6 use the shared eager verifier and add no graph variants.
-Short, 4K, and 8K real-model checks match ordinary output exactly, accepted and rejected paths are
-both maintained, and the complete 262K MTP1 profile retains 1.206 GiB free. Numerical, latency,
-and memory evidence is in [the Phase 13 qualification](../benchmarks/gemma4-phase13-mtp-widths.md).
+commit remain outside capture. Widths 2–6 use the shared eager verifier and add no graph variants.
+The complete 262K MTP1 profile holds 17,453,691,904 weight bytes and leaves 868,941,824 bytes after
+startup. Short and long real-model checks match ordinary greedy output exactly on accepted and
+rejected paths. Proposal ownership, selection evidence, and public commands are defined in
+[Gemma 4 MTP execution](gemma4-mtp.md).
 
 ## Qualification and first divergence
 
@@ -115,7 +122,7 @@ build/tests/ninfer_gemma4_31b_it_reference ARTIFACT DUMP_DIR \
 Compare it with the source-gated fixture:
 
 ```text
-uv run --python 3.11 --with numpy python \
+/tmp/ninfer-gemma4-reference/bin/python \
   tools/reference/gemma4_31b_it/compare_ninfer_dump.py \
   --fixture tests/fixtures/gemma4_31b_it/checkpoint.npz --dump DUMP_DIR
 ```

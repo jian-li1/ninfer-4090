@@ -8,6 +8,7 @@ run the CLI or HTTP server.
 | Document | Purpose |
 |---|---|
 | [RTX 3090 Linux build](rtx-3090-linux.md) | Docker and native Ubuntu builds for the `sm_86` applications |
+| [Gemma 4 31B on RTX 4090](gemma4-31b-4090.md) | pinned sources, native conversion, build, tests, 262K serving, benchmarks, and troubleshooting |
 | [CLI](cli.md) | text, chat-history, image/video input, output streams, sampling, MTP, and common runtime options |
 | [HTTP serving](serving.md) | OpenAI Responses/Chat Completions, Anthropic Messages, state, streaming, token counting, authentication, and tool calls |
 | [Performance](performance.md) | RTX 5090 measurement coverage, per-model serving results, methodology, and publication rules |
@@ -25,6 +26,7 @@ The executable `--help` output is the exact source for command-line option spell
 | Qwen3.8-27B | `groupwise-int` | [Hugging Face](https://huggingface.co/neroued/Qwen3.8-27B-NInfer) | [model card](../model-cards/Qwen3.8-27B-NInfer/README.md) |
 | Qwen3.8-27B | `nvfp4` | [Hugging Face](https://huggingface.co/neroued/Qwen3.8-27B-nvfp4-NInfer) | [model card](../model-cards/Qwen3.8-27B-nvfp4-NInfer/README.md) |
 | Qwen3.6-35B-A3B | `groupwise-int` | [Hugging Face](https://huggingface.co/neroued/Qwen3.6-35B-A3B-NInfer) | [model card](../model-cards/Qwen3.6-35B-A3B-NInfer/README.md) |
+| Gemma 4 31B IT | `groupwise-int` | [convert the pinned target and assistant](gemma4-31b-4090.md#convert-the-native-artifact) | [artifact contract](maintainer/gemma4-31b-it-artifact.md) |
 
 ## Repository-local guides
 
@@ -78,5 +80,7 @@ Artifact and model references:
 - [Gemma 4 31B IT text-model semantics and pinned authority](maintainer/gemma4-31b-it-model.md)
 - [Gemma 4 31B IT text-only artifact contract](maintainer/gemma4-31b-it-artifact.md)
 - [Gemma 4 31B IT reference text execution and parity](maintainer/gemma4-31b-it-execution.md)
+- [Gemma 4 heterogeneous KV layout](maintainer/gemma4-kv-layout.md)
+- [Gemma 4 assistant/MTP execution](maintainer/gemma4-mtp.md)
 - [Qwen3.6-35B-A3B model semantics](maintainer/qwen3.6-35b-a3b-model.md)
 - [Qwen3.6-35B-A3B artifact contracts](maintainer/qwen3.6-35b-a3b-artifact.md)

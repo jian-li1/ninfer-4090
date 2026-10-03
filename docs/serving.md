@@ -33,13 +33,15 @@ required KV codec (and omit `--vision`):
   --host 127.0.0.1 --port 8080 \
   --max-context 262144 --kv-capacity 262144 \
   --max-concurrency 1 --kv-dtype rk4v4-e8 \
-  --spec mtp --draft-tokens 1 --lm-head-draft \
+  --spec mtp --draft-tokens 1 \
   --slot-save-path var/gemma4-slots
 ```
 
 The advertised model ID is `gemma4-31b-it`. Chat Completions, Responses, Anthropic Messages,
 streaming, health/metrics, and slot/cache controls all enter the same `ninfer::Engine`; media is
 rejected with the normal invalid-media client error before GPU execution.
+See the [Gemma 4 31B RTX 4090 guide](gemma4-31b-4090.md) for conversion, verified memory profiles,
+the persistent-cache command, benchmarks, and troubleshooting.
 
 With `C=2` and two extra Device checkpoint slots, the process owns two active StateImage guarantees
 plus a global pool of two Device-resident checkpoints. Eight pinned Host State slots and 8 GiB of
