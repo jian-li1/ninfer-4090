@@ -38,7 +38,7 @@
 namespace ninfer::targets::gemma4_31b_it::detail {
 namespace {
 
-constexpr std::size_t kActivationWorkspaceBytes = 32ULL * 1024 * 1024;
+constexpr std::uint32_t kMaximumChunkTokens = 2048;
 constexpr ops::AttentionHeadGeometry kSlidingGeometry{
     TextConfig::sliding_head_dim, TextConfig::query_heads, TextConfig::sliding_kv_heads};
 constexpr ops::AttentionHeadGeometry kFullGeometry{
@@ -146,7 +146,8 @@ struct ModelBuffers {
     Tensor logits;
 };
 
-ModelBuffers allocate_model_buffers(WorkspaceArena& activations, std::int32_t tokens,
+template <class Allocator>
+ModelBuffers allocate_model_buffers(Allocator& activations, std::int32_t tokens,
                                     bool all_logits = false) {
     return {
         .ids = activations.alloc(DType::I32, {tokens}),
@@ -247,14 +248,32 @@ void enqueue_model(const ModelWeights& weights, HeterogeneousKVTransaction& tran
 
         const TextKvLayerAddress address = text_kv_layer_address(static_cast<std::uint32_t>(layer));
         PagedKVLayerView view = layer_cache(transaction, address, head_dim, kv_heads);
-        if (full) {
-            ops::causal_full_softmax_attention(
-                query, key, value, buffers.positions, kFullGeometry, 1.0F, view,
-                full_envelope, attention_workspace, attended, stream);
-        } else {
-            ops::causal_sliding_softmax_attention(
-                query, key, value, buffers.positions, kSlidingGeometry,
-                TextConfig::sliding_window, 1.0F, view, attended, stream);
+        // Cache publication is page-local even when the surrounding projections and MLP use a
+        // wider model chunk. Sequential attention tiles preserve causal visibility and the local
+        // ring's eviction order while allowing GEMMs to run at T=256..1024.
+        for (std::int32_t begin = 0; begin < tokens; begin += kPagedKVPageSize) {
+            const std::int32_t count = std::min<std::int32_t>(kPagedKVPageSize, tokens - begin);
+            const Tensor query_tile = query.slice(2, begin, count);
+            const Tensor key_tile = key.slice(2, begin, count);
+            const Tensor value_tile = value.slice(2, begin, count);
+            const Tensor position_tile = buffers.positions.slice(0, begin, count);
+            Tensor attended_tile = attended.slice(2, begin, count);
+            if (full) {
+                ops::CausalAttentionExecutionEnvelope tile_envelope = full_envelope;
+                if (tokens > kPagedKVPageSize) {
+                    tile_envelope = {
+                        full_envelope.min_visible_keys + static_cast<std::uint32_t>(begin),
+                        full_envelope.min_visible_keys + static_cast<std::uint32_t>(begin + count - 1),
+                    };
+                }
+                ops::causal_full_softmax_attention(
+                    query_tile, key_tile, value_tile, position_tile, kFullGeometry, 1.0F,
+                    view, tile_envelope, attention_workspace, attended_tile, stream);
+            } else {
+                ops::causal_sliding_softmax_attention(
+                    query_tile, key_tile, value_tile, position_tile, kSlidingGeometry,
+                    TextConfig::sliding_window, 1.0F, view, attended_tile, stream);
+            }
         }
         if (!dump_directory.empty() && (layer == 0 || layer == 5)) {
             write_bf16(dump_directory, "persistent_layer" + std::to_string(layer) +
@@ -713,6 +732,16 @@ double nearest_rank_percentile(std::vector<double> values, std::uint32_t percent
 
 } // namespace
 
+std::size_t runtime_activation_workspace_capacity_bytes(std::int32_t tokens,
+                                                        bool all_logits) {
+    if (tokens <= 0 || tokens > static_cast<std::int32_t>(kMaximumChunkTokens)) {
+        throw std::invalid_argument("Gemma activation workspace token count must be in [1,2048]");
+    }
+    WorkspaceLayoutBuilder layout;
+    (void)allocate_model_buffers(layout, tokens, all_logits);
+    return layout.peak_bytes();
+}
+
 PersistentRunResult run_persistent_target(const std::filesystem::path& artifact_path,
                                           const PersistentRunOptions& options) {
     const std::uint32_t prefill_tokens = options.input_tokens.empty()
@@ -724,7 +753,8 @@ PersistentRunResult run_persistent_target(const std::filesystem::path& artifact_
     const bool use_mtp = options.mtp_draft_tokens != 0;
     if (options.maximum_context < TextConfig::sliding_window ||
         options.maximum_context > TextConfig::maximum_position ||
-        prefill_tokens == 0 || options.chunk_tokens == 0 || options.chunk_tokens > 64 ||
+        prefill_tokens == 0 || options.chunk_tokens == 0 ||
+        options.chunk_tokens > kMaximumChunkTokens ||
         prefill_tokens + appended_tokens > options.maximum_context ||
         (options.generation_tokens > 0 && options.run_deep_decode) ||
         (options.qualify_graph_transactions &&
@@ -818,7 +848,15 @@ PersistentRunResult run_persistent_target(const std::filesystem::path& artifact_
         ops::causal_full_softmax_attention_workspace_capacity_bytes(
             kFullGeometry, KvCacheStorage::RK4V4E8, maximum_envelope, 1,
             static_cast<std::int32_t>(maximum_transaction_tokens));
-    DeviceBuffer activation_backing(kActivationWorkspaceBytes);
+    std::size_t activation_bytes = runtime_activation_workspace_capacity_bytes(
+        static_cast<std::int32_t>(options.chunk_tokens), false);
+    if (use_mtp) {
+        activation_bytes = std::max(
+            activation_bytes,
+            runtime_activation_workspace_capacity_bytes(
+                static_cast<std::int32_t>(options.mtp_draft_tokens + 1U), true));
+    }
+    DeviceBuffer activation_backing(activation_bytes);
     DeviceBuffer attention_backing(std::max<std::size_t>(attention_bytes, 256));
     WorkspaceArena activations({activation_backing.p, activation_backing.bytes});
     WorkspaceArena attention_workspace({attention_backing.p, attention_backing.bytes});

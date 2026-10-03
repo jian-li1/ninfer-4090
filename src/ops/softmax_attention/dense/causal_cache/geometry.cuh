@@ -17,4 +17,10 @@ using CausalD256H24Kv4 = CausalAttentionGeometry<24, 4, 1>;
 using CausalD256H16Kv2 = CausalAttentionGeometry<16, 2, 2>;
 using CausalD256H32Kv16 = CausalAttentionGeometry<32, 16, 1>;
 
+struct CausalD512H32Kv4 : AttentionHeadMapping<32, 4> {
+    static constexpr int HeadDim             = 512;
+    static constexpr int SmallTSplitScale    = 1;
+    static constexpr int SmallTMaximumSplits = 32;
+};
+
 } // namespace ninfer::ops

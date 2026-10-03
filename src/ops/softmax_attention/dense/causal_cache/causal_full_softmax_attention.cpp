@@ -20,6 +20,7 @@ constexpr std::int32_t kQHeads = 32;
 constexpr std::int32_t kKVHeads = 4;
 constexpr std::int32_t kGroups = 8;
 constexpr std::int32_t kMaximumPageLocalTokens = 64;
+constexpr std::uint32_t kPromptRouteMaximumVisibleKeys = 32768;
 constexpr float kScale = 1.0F;
 
 void require_shape(const Tensor& tensor, std::int32_t n0, std::int32_t n1, std::int32_t n2,
@@ -105,7 +106,7 @@ std::size_t causal_full_softmax_attention_workspace_capacity_bytes(
     validate_profile(geometry, cache_storage, envelope, min_tokens, max_tokens,
                      "causal_full_softmax_attention workspace");
     if (envelope.max_visible_keys < tensor_core_route_threshold(min_tokens)) return 0;
-    const std::int32_t tokens = std::min(max_tokens, 4);
+    const std::int32_t tokens = std::min(max_tokens, 6);
     const std::int32_t splits = detail::causal_full_attention_split_capacity(envelope);
     WorkspaceLayoutBuilder layout;
     Tensor acc;
@@ -148,6 +149,10 @@ void causal_full_softmax_attention(const Tensor& q, const Tensor& k, const Tenso
     }
 
     detail::kv_cache_append_launch(k, v, positions, cache, stream);
+    if (tokens > 7 && envelope.max_visible_keys <= kPromptRouteMaximumVisibleKeys) {
+        detail::causal_full_prompt_attention_launch(q, positions, scale, cache, out, stream);
+        return;
+    }
     auto workspace_scope = workspace.scope();
     Tensor partial_acc;
     Tensor partial_m;
@@ -160,7 +165,7 @@ void causal_full_softmax_attention(const Tensor& q, const Tensor& k, const Tenso
 
     // Gemma MTP verifies up to seven tokens at once. Use the decode-width kernel independently
     // for each query so every accepted-prefix column is bitwise identical to ordinary T=1.
-    const std::int32_t tile_tokens = tokens <= 7 ? 1 : std::min(tokens, 4);
+    const std::int32_t tile_tokens = tokens <= 7 ? 1 : std::min(tokens, 6);
     const std::int32_t splits = detail::causal_full_attention_split_capacity(envelope);
     allocate_partials(workspace, tile_tokens, splits, partial_acc, partial_m, partial_l);
     for (std::int32_t begin = 0; begin < tokens; begin += tile_tokens) {

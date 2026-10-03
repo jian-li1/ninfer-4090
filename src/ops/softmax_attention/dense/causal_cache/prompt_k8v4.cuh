@@ -132,8 +132,8 @@ __global__ __maxnreg__(120) void causal_attention_prompt_k8v4_kernel(
 #pragma unroll
         for (int r = 0; r < 8; ++r) {
             const int d = lane + 32 * r;
-            causal_prompt_store_byte_swizzled(q_fp8, row, d,
-                                              kv_cache_fp8_quant_code(values[r], inv));
+            causal_prompt_store_byte_swizzled<Geometry>(
+                q_fp8, row, d, kv_cache_fp8_quant_code(values[r], inv));
         }
         if (lane == 0) q_scale[row] = qs;
     }

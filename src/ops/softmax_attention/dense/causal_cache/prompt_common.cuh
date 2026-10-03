@@ -27,7 +27,7 @@ inline constexpr int kCausalPromptSmemBytes = (kCausalPromptBr + 2 * kCausalProm
 
 template <typename Geometry>
 __device__ __forceinline__ std::int64_t causal_prompt_q_row_offset(int q_head, int token) {
-    return static_cast<std::int64_t>(kCausalPromptHeadDim) *
+    return static_cast<std::int64_t>(Geometry::HeadDim) *
            (static_cast<std::int64_t>(q_head) +
             static_cast<std::int64_t>(Geometry::QHeads) * token);
 }
@@ -42,10 +42,10 @@ __device__ __forceinline__ void causal_prompt_zero_output_rows(__nv_bfloat16* ou
                                                                int row_begin, int row_end, int tid,
                                                                int threads) {
     if (row_begin >= row_end) { return; }
-    const int elements = (row_end - row_begin) * kCausalPromptHeadDim;
+    const int elements = (row_end - row_begin) * Geometry::HeadDim;
     for (int element = tid; element < elements; element += threads) {
-        const int row = row_begin + (element >> 8);
-        const int d   = element & 255;
+        const int row = row_begin + element / Geometry::HeadDim;
+        const int d   = element % Geometry::HeadDim;
         out[causal_prompt_q_index<Geometry>(q_head, d, row)] = __float2bfloat16(0.0f);
     }
 }
@@ -56,12 +56,13 @@ __device__ __forceinline__ int causal_prompt_swz(int row, int col) {
     return (((col >> 3) ^ (row & 7)) << 3) | (col & 7);
 }
 
-template <typename Byte>
+template <typename Geometry, typename Byte>
 __device__ __forceinline__ void causal_prompt_store_byte_swizzled(Byte* tile, int row, int d,
                                                                   Byte code) {
     const int col_b16 = d >> 1;
     const int byte    = d & 1;
-    const int off = (row * (kCausalPromptHeadDim / 2) + causal_prompt_swz(row, col_b16)) * 2 + byte;
+    const int off =
+        (row * (Geometry::HeadDim / 2) + causal_prompt_swz(row, col_b16)) * 2 + byte;
     tile[off]     = code;
 }
 

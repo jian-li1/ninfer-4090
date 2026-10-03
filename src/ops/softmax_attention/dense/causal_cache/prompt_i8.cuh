@@ -23,40 +23,34 @@
 
 namespace ninfer::ops {
 
-inline constexpr int kCausalPromptI8Warps      = 16;
-inline constexpr int kCausalPromptI8Threads    = kCausalPromptI8Warps * 32;
-inline constexpr int kCausalPromptI8Br         = 64;
-inline constexpr int kCausalPromptI8Bc         = 64;
-inline constexpr int kCausalPromptI8Groups     = kCausalPromptHeadDim / kKVCacheInt8Group;
-inline constexpr int kCausalPromptI8DB16       = kCausalPromptHeadDim / 2;
-inline constexpr int kCausalPromptI8RowTiles   = kCausalPromptI8Br / 16;
-inline constexpr int kCausalPromptI8DConsumers = kCausalPromptI8Warps / kCausalPromptI8RowTiles;
+template <typename Geometry>
+struct CausalPromptI8Schedule {
+    static_assert(Geometry::HeadDim == 256 || Geometry::HeadDim == 512);
 
-inline constexpr int kCausalPromptI8QBytes = kCausalPromptI8Br * kCausalPromptHeadDim;
-inline constexpr int kCausalPromptI8QScaleBytes =
-    kCausalPromptI8Br * kCausalPromptI8Groups * static_cast<int>(sizeof(float));
-inline constexpr int kCausalPromptI8KBytes = kCausalPromptI8Bc * kCausalPromptHeadDim;
-inline constexpr int kCausalPromptI8VBytes = kCausalPromptI8Bc * kCausalPromptHeadDim;
-inline constexpr int kCausalPromptI8VStageBytes =
-    kCausalPromptI8Bc * kCausalPromptHeadDim * static_cast<int>(sizeof(__half));
-inline constexpr int kCausalPromptI8PBytes =
-    kCausalPromptI8Br * kCausalPromptI8Bc * static_cast<int>(sizeof(__half));
-inline constexpr int kCausalPromptI8ScaleBytes =
-    2 * kCausalPromptI8Bc * kCausalPromptI8Groups * static_cast<int>(sizeof(__half));
-inline constexpr int kCausalPromptI8StatsBytes =
-    2 * kCausalPromptI8Br * static_cast<int>(sizeof(float));
-// Block-max and block-sum exchange slots for the paired-producer schedule (two column
-// halves per 16-row tile). Allocated on every arch so the launch envelope stays uniform.
-inline constexpr int kCausalPromptI8PairStatsBytes =
-    2 * 2 * kCausalPromptI8Br * static_cast<int>(sizeof(float));
-inline constexpr int kCausalPromptI8SmemBytes =
-    kCausalPromptI8QBytes + kCausalPromptI8QScaleBytes + kCausalPromptI8KBytes + kCausalPromptI8VBytes +
-    kCausalPromptI8VStageBytes + kCausalPromptI8PBytes + kCausalPromptI8ScaleBytes +
-    kCausalPromptI8StatsBytes + kCausalPromptI8PairStatsBytes;
+    static constexpr int Warps      = 16;
+    static constexpr int Threads    = Warps * 32;
+    static constexpr int Br         = Geometry::HeadDim == 512 ? 32 : 64;
+    static constexpr int Bc         = Geometry::HeadDim == 512 ? 32 : 64;
+    static constexpr int Groups     = Geometry::HeadDim / kKVCacheInt8Group;
+    static constexpr int DB16       = Geometry::HeadDim / 2;
+    static constexpr int RowTiles   = Br / 16;
+    static constexpr int DConsumers = Warps / RowTiles;
 
-static_assert(kCausalPromptI8Groups == 4);
-static_assert(kCausalPromptI8DConsumers == 4);
-static_assert(kCausalPromptI8SmemBytes == 93696);
+    static constexpr int QBytes      = Br * Geometry::HeadDim;
+    static constexpr int QScaleBytes = Br * Groups * static_cast<int>(sizeof(float));
+    static constexpr int KBytes      = Bc * Geometry::HeadDim;
+    static constexpr int VBytes      = Bc * Geometry::HeadDim;
+    static constexpr int VStageBytes = Bc * Geometry::HeadDim * static_cast<int>(sizeof(__half));
+    static constexpr int PBytes      = Br * Bc * static_cast<int>(sizeof(__half));
+    static constexpr int ScaleBytes  = 2 * Bc * Groups * static_cast<int>(sizeof(__half));
+    static constexpr int StatsBytes  = 2 * Br * static_cast<int>(sizeof(float));
+    static constexpr int PairStatsBytes = 2 * 2 * Br * static_cast<int>(sizeof(float));
+    static constexpr int SmemBytes      = QBytes + QScaleBytes + KBytes + VBytes + VStageBytes +
+                                          PBytes + ScaleBytes + StatsBytes + PairStatsBytes;
+};
+
+static_assert(CausalPromptI8Schedule<CausalD256H24Kv4>::SmemBytes == 93696);
+static_assert(CausalPromptI8Schedule<CausalD512H32Kv4>::SmemBytes == 86784);
 
 __device__ __forceinline__ int4 causal_prompt_i8_dequant_f16x8(const std::int8_t* codes8,
                                                              __half scale) {
@@ -112,14 +106,15 @@ __global__ __maxnreg__(NINFER_CAUSAL_PROMPT_I8_MAXNREG) void causal_attention_pr
     const __half* __restrict__ cache_v_scale, Metadata metadata,
     const std::int32_t* __restrict__ positions, float scale, __nv_bfloat16* __restrict__ out,
     std::int32_t width) {
-    constexpr int D             = kCausalPromptHeadDim;
-    constexpr int Br            = kCausalPromptI8Br;
-    constexpr int Bc            = kCausalPromptI8Bc;
-    constexpr int DB16          = kCausalPromptI8DB16;
-    constexpr int Groups        = kCausalPromptI8Groups;
+    using Schedule              = CausalPromptI8Schedule<Geometry>;
+    constexpr int D             = Geometry::HeadDim;
+    constexpr int Br            = Schedule::Br;
+    constexpr int Bc            = Schedule::Bc;
+    constexpr int DB16          = Schedule::DB16;
+    constexpr int Groups        = Schedule::Groups;
     constexpr int GroupKc       = kKVCacheInt8Group / 32;
     constexpr int QKNt          = Bc / 8;
-    constexpr int PVNtPerWarp   = D / (kCausalPromptI8DConsumers * 8);
+    constexpr int PVNtPerWarp   = D / (Schedule::DConsumers * 8);
     constexpr int PVKs          = Bc / 16;
 // Ada runs one CTA per SM; four producer warps (one per scheduler) cannot hide mma
 // latency and leave twelve workers stalled at the phase barrier. Split each 16-row
@@ -129,8 +124,8 @@ __global__ __maxnreg__(NINFER_CAUSAL_PROMPT_I8_MAXNREG) void causal_attention_pr
 #else
     constexpr int ColSplit = 1;
 #endif
-    constexpr int ProducerWarps = kCausalPromptI8RowTiles * ColSplit;
-    constexpr int VWorkerWarps  = kCausalPromptI8Warps - ProducerWarps;
+    constexpr int ProducerWarps = Schedule::RowTiles * ColSplit;
+    constexpr int VWorkerWarps  = Schedule::Warps - ProducerWarps;
     constexpr int WorkerThreads = VWorkerWarps * 32;
     constexpr int QKNtL         = QKNt / ColSplit;
     constexpr float Log2E       = 1.4426950408889634074f;
@@ -141,15 +136,15 @@ __global__ __maxnreg__(NINFER_CAUSAL_PROMPT_I8_MAXNREG) void causal_attention_pr
 
     extern __shared__ __align__(16) unsigned char smem_raw[];
     std::int8_t* q_i8 = reinterpret_cast<std::int8_t*>(smem_raw);
-    float* q_scale    = reinterpret_cast<float*>(q_i8 + kCausalPromptI8QBytes);
+    float* q_scale    = reinterpret_cast<float*>(q_i8 + Schedule::QBytes);
     std::int8_t* k_i8 = reinterpret_cast<std::int8_t*>(reinterpret_cast<unsigned char*>(q_scale) +
-                                                       kCausalPromptI8QScaleBytes);
-    std::int8_t* v_i8 = k_i8 + kCausalPromptI8KBytes;
-    __half* v_f16     = reinterpret_cast<__half*>(v_i8 + kCausalPromptI8VBytes);
+                                                       Schedule::QScaleBytes);
+    std::int8_t* v_i8 = k_i8 + Schedule::KBytes;
+    __half* v_f16     = reinterpret_cast<__half*>(v_i8 + Schedule::VBytes);
     __half* p_s       = reinterpret_cast<__half*>(reinterpret_cast<unsigned char*>(v_f16) +
-                                                  kCausalPromptI8VStageBytes);
+                                                  Schedule::VStageBytes);
     __half* k_scale_s =
-        reinterpret_cast<__half*>(reinterpret_cast<unsigned char*>(p_s) + kCausalPromptI8PBytes);
+        reinterpret_cast<__half*>(reinterpret_cast<unsigned char*>(p_s) + Schedule::PBytes);
     __half* v_scale_s    = k_scale_s + Bc * Groups;
     float* alpha_s       = reinterpret_cast<float*>(v_scale_s + Bc * Groups);
     float* final_l_s     = alpha_s + Br;
@@ -169,7 +164,7 @@ __global__ __maxnreg__(NINFER_CAUSAL_PROMPT_I8_MAXNREG) void causal_attention_pr
     if (q_head >= Geometry::QHeads || q0 >= width) { return; }
     if (q0 >= tokens) {
         causal_prompt_zero_output_rows<Geometry>(out, q_head, q0, min(q0 + Br, width), tid,
-                                               kCausalPromptI8Threads);
+                                                 Schedule::Threads);
         return;
     }
     const int base_pos              = positions[0];
@@ -190,7 +185,7 @@ __global__ __maxnreg__(NINFER_CAUSAL_PROMPT_I8_MAXNREG) void causal_attention_pr
             : ((q0 + Br <= tokens) ? min(key_blocks, (base_pos + q0 + 1) / Bc) : 0);
 
     // Quantize Q cooperatively. One warp owns one (row, 64-d group) at a time.
-    for (int unit = warp; unit < Br * Groups; unit += kCausalPromptI8Warps) {
+    for (int unit = warp; unit < Br * Groups; unit += Schedule::Warps) {
         const int row = unit / Groups;
         const int grp = unit - row * Groups;
         const int d0  = grp * kKVCacheInt8Group + lane;
@@ -206,8 +201,10 @@ __global__ __maxnreg__(NINFER_CAUSAL_PROMPT_I8_MAXNREG) void causal_attention_pr
         absmax          = warp_max(absmax, FullMask);
         const float qs  = absmax > 0.0f ? absmax / 127.0f : 0.0f;
         const float inv = qs > 0.0f ? 1.0f / qs : 0.0f;
-        causal_prompt_store_byte_swizzled(q_i8, row, d0, kv_cache_int8_quant_code(x0, inv));
-        causal_prompt_store_byte_swizzled(q_i8, row, d1, kv_cache_int8_quant_code(x1, inv));
+        causal_prompt_store_byte_swizzled<Geometry>(q_i8, row, d0,
+                                                     kv_cache_int8_quant_code(x0, inv));
+        causal_prompt_store_byte_swizzled<Geometry>(q_i8, row, d1,
+                                                     kv_cache_int8_quant_code(x1, inv));
         if (lane == 0) { q_scale[row * Groups + grp] = qs; }
     }
     __syncthreads();
@@ -217,32 +214,50 @@ __global__ __maxnreg__(NINFER_CAUSAL_PROMPT_I8_MAXNREG) void causal_attention_pr
         // paths; interior blocks stage with unconditional copies.
         constexpr bool FullTile = decltype(full_tag)::value;
         const int physical_page = metadata.physical_page(tile_k0 >> kPagedKVPageShift);
-        for (int key_l = tid; key_l < Bc; key_l += kCausalPromptI8Threads) {
+        for (int key_l = tid; key_l < Bc; key_l += Schedule::Threads) {
             const int key = tile_k0 + key_l;
+            const int page_offset = (tile_k0 & kPagedKVPageMask) + key_l;
             __half* kd    = &k_scale_s[key_l * Groups];
             __half* vd    = &v_scale_s[key_l * Groups];
             if (FullTile || key <= max_query_abs) {
                 const std::int64_t off =
-                    kv_cache_int8_quant_scale_index<Geometry>(physical_page, kv_head, 0, key_l);
-                ninfer::ops::cp_async<8>(kd, &cache_k_scale[off]);
-                ninfer::ops::cp_async<8>(vd, &cache_v_scale[off]);
+                    kv_cache_int8_quant_scale_index<Geometry, D>(physical_page, kv_head, 0,
+                                                                 page_offset);
+                if constexpr (Groups == 8) {
+                    // Do not impose a 16-byte source-alignment precondition on scale-plane
+                    // views. Stage the D512 row as the two naturally aligned G64 halves.
+                    ninfer::ops::cp_async<8>(kd, &cache_k_scale[off]);
+                    ninfer::ops::cp_async<8>(kd + 4, &cache_k_scale[off + 4]);
+                    ninfer::ops::cp_async<8>(vd, &cache_v_scale[off]);
+                    ninfer::ops::cp_async<8>(vd + 4, &cache_v_scale[off + 4]);
+                } else {
+                    ninfer::ops::cp_async<8>(kd, &cache_k_scale[off]);
+                    ninfer::ops::cp_async<8>(vd, &cache_v_scale[off]);
+                }
             } else {
-                store_vec(kd, make_int2(0, 0));
-                store_vec(vd, make_int2(0, 0));
+                if constexpr (Groups == 8) {
+                    store_vec(kd, make_int4(0, 0, 0, 0));
+                    store_vec(vd, make_int4(0, 0, 0, 0));
+                } else {
+                    store_vec(kd, make_int2(0, 0));
+                    store_vec(vd, make_int2(0, 0));
+                }
             }
         }
 #pragma unroll 1
-        for (int chunk = tid; chunk < Bc * (D / 16); chunk += kCausalPromptI8Threads) {
+        for (int chunk = tid; chunk < Bc * (D / 16); chunk += Schedule::Threads) {
             const int key_l = chunk / (D / 16);
             const int dc    = chunk - key_l * (D / 16);
             const int d     = dc * 16;
             const int key   = tile_k0 + key_l;
+            const int page_offset = (tile_k0 & kPagedKVPageMask) + key_l;
             std::int8_t* kd = &k_i8[(key_l * DB16 + causal_prompt_swz(key_l, dc * 8)) * 2];
             std::int8_t* vd = &v_i8[key_l * D + d];
             if (FullTile || key <= max_query_abs) {
                 if constexpr (E8Root) {
                     const std::int64_t koff = paged_kv_page_head_offset<64, Geometry::KVHeads>(
-                        physical_page, kv_head) + static_cast<std::int64_t>(key_l) * 64 + (d / 4);
+                        physical_page, kv_head) + static_cast<std::int64_t>(page_offset) * 64 +
+                        (d / 4);
                     const uint32_t src4 = *reinterpret_cast<const uint32_t*>(&reinterpret_cast<const std::uint8_t*>(cache_k)[koff]);
                     const uint8_t c1_0 = static_cast<uint8_t>(src4 & 0xFF);
                     const uint8_t c2_0 = static_cast<uint8_t>((src4 >> 8) & 0xFF);
@@ -254,22 +269,26 @@ __global__ __maxnreg__(NINFER_CAUSAL_PROMPT_I8_MAXNREG) void causal_attention_pr
                     *reinterpret_cast<uint64_t*>(&kd[0]) = *reinterpret_cast<const uint64_t*>(dec8_0);
                     *reinterpret_cast<uint64_t*>(&kd[8]) = *reinterpret_cast<const uint64_t*>(dec8_1);
                     const std::int64_t voff =
-                        kv_cache_i4_code_index<Geometry>(physical_page, kv_head, d / 2, key_l);
+                        kv_cache_i4_code_index<Geometry, D>(physical_page, kv_head, d / 2,
+                                                            page_offset);
                     kv_cache_unpack_i4x16(&cache_v[voff], vd);
                 } else if constexpr (PackedK) {
                     const std::int64_t koff =
-                        kv_cache_i4_code_index<Geometry>(physical_page, kv_head, d / 2, key_l);
+                        kv_cache_i4_code_index<Geometry, D>(physical_page, kv_head, d / 2,
+                                                            page_offset);
                     kv_cache_unpack_i4x16(&reinterpret_cast<const std::uint8_t*>(cache_k)[koff], kd);
                     const std::int64_t voff =
-                        kv_cache_i4_code_index<Geometry>(physical_page, kv_head, d / 2, key_l);
+                        kv_cache_i4_code_index<Geometry, D>(physical_page, kv_head, d / 2,
+                                                            page_offset);
                     kv_cache_unpack_i4x16(&cache_v[voff], vd);
                 } else {
                     const std::int64_t off =
-                        kv_cache_int8_quant_code_index<Geometry>(physical_page, kv_head, d, key_l);
+                        kv_cache_int8_quant_code_index<Geometry, D>(physical_page, kv_head, d,
+                                                                   page_offset);
                     cp_async<16, Cache::cg>(kd, &cache_k[off]);
                     if constexpr (PackedV) {
-                        const std::int64_t voff = kv_cache_i4_code_index<Geometry>(
-                            physical_page, kv_head, d / 2, key_l);
+                        const std::int64_t voff = kv_cache_i4_code_index<Geometry, D>(
+                            physical_page, kv_head, d / 2, page_offset);
                         kv_cache_unpack_i4x16(&cache_v[voff], vd);
                     } else {
                         cp_async<16, Cache::cg>(vd,
@@ -541,8 +560,8 @@ __global__ __maxnreg__(NINFER_CAUSAL_PROMPT_I8_MAXNREG) void causal_attention_pr
             }
         }
 
-        const int row_tile = warp % kCausalPromptI8RowTiles;
-        const int d_slice  = warp / kCausalPromptI8RowTiles;
+        const int row_tile = warp % Schedule::RowTiles;
+        const int d_slice  = warp / Schedule::RowTiles;
         const int row_base = row_tile * 16;
         const float alpha0 = alpha_s[row_base + gid];
         const float alpha1 = alpha_s[row_base + gid + 8];
@@ -628,8 +647,8 @@ __global__ __maxnreg__(NINFER_CAUSAL_PROMPT_I8_MAXNREG) void causal_attention_pr
     }
     __syncthreads();
 
-    const int row_tile = warp % kCausalPromptI8RowTiles;
-    const int d_slice  = warp / kCausalPromptI8RowTiles;
+    const int row_tile = warp % Schedule::RowTiles;
+    const int d_slice  = warp / Schedule::RowTiles;
     const int row_base = row_tile * 16;
     const int row0     = row_base + gid;
     const int row1     = row0 + 8;
@@ -652,7 +671,7 @@ __global__ __maxnreg__(NINFER_CAUSAL_PROMPT_I8_MAXNREG) void causal_attention_pr
         }
     }
     causal_prompt_zero_output_rows<Geometry>(out, q_head, tokens, min(q0 + Br, width), tid,
-                                           kCausalPromptI8Threads);
+                                             Schedule::Threads);
 }
 
 } // namespace ninfer::ops

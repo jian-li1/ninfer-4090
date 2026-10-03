@@ -297,6 +297,66 @@ int run_scoring(const char* artifact) {
     return 0;
 }
 
+int run_wide_prefill_equivalence(const char* artifact) {
+    std::vector<ninfer::TokenId> prompt;
+    std::vector<ninfer::TokenId> reference;
+    {
+        auto options = engine_options(artifact);
+        options.max_concurrency = 1;
+        options.context_cache = {.enabled = false};
+        options.prefill_chunk = 64;
+        ninfer::Engine engine(std::move(options));
+        std::string text;
+        for (int repeat = 0; repeat < 160; ++repeat) {
+            text += "The quick brown fox records a deterministic cache boundary. ";
+        }
+        prompt = engine.tokenize_text(text);
+        if (prompt.size() < 256) {
+            std::cerr << "Gemma wide-prefill fixture tokenized too narrowly\n";
+            return 1;
+        }
+        if (prompt.size() > 768) prompt.resize(768);
+        reference = engine.generate(engine.prepare_tokens(prompt), greedy(3, false))
+                        .generated_token_ids;
+    }
+    {
+        auto options = engine_options(artifact);
+        options.max_concurrency = 1;
+        options.context_cache = {.enabled = false};
+        options.prefill_chunk = 1024;
+        ninfer::Engine engine(std::move(options));
+        const auto wide = engine.generate(engine.prepare_tokens(prompt), greedy(3, false));
+        if (wide.generated_token_ids != reference || wide.generated_token_ids.size() != 3 ||
+            !engine.healthy()) {
+            std::cerr << "Gemma T=1024 model chunk changed T=64 greedy output\n";
+            return 1;
+        }
+    }
+    return 0;
+}
+
+int run_full_context_mtp_admission(const char* artifact) {
+    auto options = engine_options(artifact);
+    options.max_context = 262144;
+    options.kv_capacity = ninfer::KvCapacityPolicy::explicit_capacity(262144);
+    options.prefill_chunk = 1024;
+    options.max_concurrency = 1;
+    options.context_cache = {.enabled = false};
+    options.speculative.backend = ninfer::SpeculativeBackend::Mtp;
+    options.speculative.draft_tokens = 1;
+    ninfer::Engine engine(std::move(options));
+    const auto memory = engine.memory_summary();
+    if (!engine.healthy() || memory.max_context != 262144 || memory.kv_capacity != 262144 ||
+        memory.workspace.capacity_bytes >= 512ULL * 1024ULL * 1024ULL ||
+        memory.available_after_startup_bytes < 512ULL * 1024ULL * 1024ULL) {
+        std::cerr << "Gemma full-context MTP profile lost its bounded workspace/headroom"
+                  << " workspace=" << memory.workspace.capacity_bytes
+                  << " free=" << memory.available_after_startup_bytes << '\n';
+        return 1;
+    }
+    return 0;
+}
+
 } // namespace
 
 int main() {
@@ -330,6 +390,8 @@ int main() {
             return result;
         }
         if (const int result = run_scoring(artifact); result != 0) return result;
+        if (const int result = run_wide_prefill_equivalence(artifact); result != 0) return result;
+        if (const int result = run_full_context_mtp_admission(artifact); result != 0) return result;
         std::cout << "PASS\n";
         return 0;
     } catch (const std::exception& error) {

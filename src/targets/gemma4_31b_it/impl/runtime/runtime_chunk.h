@@ -20,6 +20,11 @@ namespace ninfer::targets::gemma4_31b_it::detail {
 struct ModelWeights;
 struct AssistantWeights;
 
+// Exact peak activation storage for one target-model execution. Startup planning uses the same
+// allocation recipe as execution so larger prefill chunks cannot drift from the real arena.
+[[nodiscard]] std::size_t runtime_activation_workspace_capacity_bytes(
+    std::int32_t tokens, bool all_logits = false);
+
 struct RuntimeMtpRound {
     std::vector<std::int32_t> output_tokens;
     std::uint32_t drafted_tokens = 0;

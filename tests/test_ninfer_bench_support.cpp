@@ -65,6 +65,7 @@ int test_cli_contract() {
         "ninfer_bench",
         "--weights",
         "model.ninfer",
+        "--cycle-corpus",
         "-p",
         "128,512",
         "-n",
@@ -97,6 +98,7 @@ int test_cli_contract() {
     });
 
     failures += expect_string(parsed.artifact_path, "model.ninfer", "artifact path");
+    failures += expect(parsed.cycle_corpus, "cycle corpus");
     failures += expect(parsed.n_prompt == std::vector<int>({128, 512}), "prompt list");
     failures += expect(parsed.n_gen == std::vector<int>({64}), "generation list");
     failures += expect(parsed.prompt_gen == std::vector<std::pair<int, int>>({{2048, 128}}),
@@ -150,18 +152,14 @@ int test_cli_contract() {
             (void)parse_for_test({"ninfer_bench", "--weights", "model.ninfer", "--lm-head-draft"});
         },
         "optimized head without a backend");
-    failures += expect_throws<std::invalid_argument>(
-        [] {
-            (void)parse_for_test({"ninfer_bench", "--weights", "model.ninfer", "--spec", "mtp",
-                                  "--draft-tokens", "6"});
-        },
-        "unsupported MTP window");
-    failures += expect_throws<std::invalid_argument>(
-        [] {
-            (void)parse_for_test(
-                {"ninfer_bench", "--weights", "model.ninfer", "--prefill-chunk", "129"});
-        },
-        "misaligned prefill chunk");
+    const auto mtp6 = parse_for_test({"ninfer_bench", "--weights", "model.ninfer", "--spec",
+                                      "mtp", "--draft-tokens", "6"});
+    failures += expect(mtp6.speculative.draft_tokens == 6,
+                       "target-validated MTP width is preserved");
+    failures += expect(
+        parse_for_test({"ninfer_bench", "--weights", "model.ninfer", "--prefill-chunk", "129"})
+                .prefill_chunk == 129,
+        "target-validated prefill chunk");
     const qb::BenchOptions fp8 =
         parse_for_test({"ninfer_bench", "--weights", "model.ninfer", "--kv-dtype", "fp8"});
     failures += expect(fp8.kv_cache == ninfer::KvCacheStorage::Fp8E4M3Row256, "FP8 KV");
@@ -330,7 +328,7 @@ int test_report_contract() {
         return fail(std::string("invalid benchmark JSON: ") + error.what());
     }
 
-    failures += expect(report.at("schema_version") == 14, "report schema v14");
+    failures += expect(report.at("schema_version") == 15, "report schema v15");
     failures += expect(report.at("config").at("speculative_backend") == "mtp" &&
                            report.at("config").at("draft_tokens") == 5,
                        "report identifies its backend and window");

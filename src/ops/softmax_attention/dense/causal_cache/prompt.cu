@@ -28,8 +28,9 @@ void causal_attention_prompt_attention_launch_for(const Tensor& q, const Tensor&
 
     const auto tokens = static_cast<std::int32_t>(q.ne[2]);
     if (kv_storage_is_int8_family(cache.storage)) {
+        using I8Schedule = CausalPromptI8Schedule<Geometry>;
         const KvForkModeFlags mode = kv_fork_mode_flags(cache.storage);
-        const dim3 attention_grid(static_cast<unsigned>(div_up(tokens, kCausalPromptI8Br)),
+        const dim3 attention_grid(static_cast<unsigned>(div_up(tokens, I8Schedule::Br)),
                                   static_cast<unsigned>(Geometry::QHeads), 1u);
         const Tensor& cache_k_scale = cache.k_scale_pages;
         const Tensor& cache_v_scale = cache.v_scale_pages;
@@ -38,10 +39,10 @@ void causal_attention_prompt_attention_launch_for(const Tensor& q, const Tensor&
             static const cudaError_t attr_i8 = cudaFuncSetAttribute(
                 causal_attention_prompt_i8_kernel<Geometry, PackedV, RotateK, RotateV, PackedK,
                                                   E8Root, SlidingWindow, Metadata>,
-                cudaFuncAttributeMaxDynamicSharedMemorySize, kCausalPromptI8SmemBytes);
+                cudaFuncAttributeMaxDynamicSharedMemorySize, I8Schedule::SmemBytes);
             CUDA_CHECK(attr_i8);
             causal_attention_prompt_i8_kernel<Geometry, PackedV, RotateK, RotateV, PackedK, E8Root, SlidingWindow, Metadata>
-                <<<attention_grid, kCausalPromptI8Threads, kCausalPromptI8SmemBytes, stream>>>(
+                <<<attention_grid, I8Schedule::Threads, I8Schedule::SmemBytes, stream>>>(
                     static_cast<const __nv_bfloat16*>(q.data),
                     static_cast<const std::int8_t*>(cache_k.data),
                     static_cast<const std::uint8_t*>(cache_v.data),
@@ -72,8 +73,9 @@ void causal_attention_prompt_attention_launch_for(const Tensor& q, const Tensor&
     }
     CUDA_CHECK(cudaGetLastError());
     if (kv_fork_mode_flags(cache.storage).rotate_v) {
-        kv_cache_inverse_rotate_output_kernel<Geometry::QHeads>
-            <<<tokens * Geometry::QHeads * kKVCacheInt8Groups, 32, 0, stream>>>(
+        constexpr int groups = Geometry::HeadDim / kKVCacheInt8Group;
+        kv_cache_inverse_rotate_output_kernel<Geometry::QHeads, Geometry::HeadDim>
+            <<<tokens * Geometry::QHeads * groups, 32, 0, stream>>>(
                 static_cast<__nv_bfloat16*>(out.data), tokens, tokens, 0, nullptr);
         CUDA_CHECK(cudaGetLastError());
     }
@@ -87,6 +89,14 @@ void causal_sliding_attention_launch(const Tensor& q, const Tensor& positions, f
     const PagedKVRingDirectMetadata metadata{
         static_cast<const std::int32_t*>(cache.block_table.data), cache.block_table.ne[0]};
     causal_attention_prompt_attention_launch_for<CausalD256H32Kv16, 1024>(
+        q, positions, scale, cache, metadata, out, stream);
+}
+
+void causal_full_prompt_attention_launch(const Tensor& q, const Tensor& positions, float scale,
+                                         const PagedKVLayerView& cache, Tensor& out,
+                                         cudaStream_t stream) {
+    const PagedKVDirectMetadata metadata{static_cast<const std::int32_t*>(cache.block_table.data)};
+    causal_attention_prompt_attention_launch_for<CausalD512H32Kv4>(
         q, positions, scale, cache, metadata, out, stream);
 }
 

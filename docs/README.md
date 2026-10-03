@@ -37,6 +37,7 @@ The executable `--help` output is the exact source for command-line option spell
 - [Gemma 4 31B CUDA Graph qualification](benchmarks/gemma4-phase11-cuda-graphs.md)
 - [Gemma 4 31B MTP1 qualification](benchmarks/gemma4-phase12-mtp1.md)
 - [Gemma 4 31B MTP width qualification](benchmarks/gemma4-phase13-mtp-widths.md)
+- [Gemma 4 31B RTX 4090 performance qualification](benchmarks/gemma4-31b-4090-performance.md)
 
 ## Maintainer references
 

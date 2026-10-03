@@ -293,6 +293,7 @@ std::string usage_text(std::string_view program) {
         << "Options:\n"
         << "  --weights <path>            required .ninfer artifact\n"
         << "  --corpus <path>             token-id corpus (default: " << kDefaultCorpusPath << ")\n"
+        << "  --cycle-corpus              repeat the corpus to reach longer prompt lengths\n"
         << "  -p, --n-prompt <list>       pp lengths, for example 512,2048\n"
         << "  -n, --n-gen <list>          tg lengths, for example 128\n"
         << "  -pg, --prompt-gen <P,G;..>  combined pp+tg tests\n"
@@ -301,12 +302,12 @@ std::string usage_text(std::string_view program) {
         << "  --warmup <n>                discarded repetitions (default: " << kDefaultWarmup
         << ")\n"
         << "  --max-ctx <tokens>          override auto-sized context capacity\n"
-        << "  --prefill-chunk <tokens>    multiple of " << kPrefillChunkAlignment
-        << " (default: " << kDefaultPrefillChunk << ")\n"
+        << "  --prefill-chunk <tokens>    target-validated width (default: "
+        << kDefaultPrefillChunk << ")\n"
         << "  --kv-dtype <bf16|int8|fp8|nvfp4|k8v4|rk8v4|rk4v4|rk4v4-e8|rk2v4-e8>  KV cache "
            "storage (default: bf16)\n"
         << "  --spec <mtp|dflash|dflash2> speculative backend (default: none)\n"
-        << "  --draft-tokens <n>         MTP 1..5; DFlash/DFlash2 1..15\n"
+        << "  --draft-tokens <n>         target-validated MTP width; DFlash/DFlash2 1..15\n"
         << "  --lm-head-draft             use the optimized proposal head; requires a speculative "
            "backend\n"
         << "  --device <id>               CUDA device ordinal (default: 0)\n"
@@ -340,6 +341,8 @@ BenchOptions parse_args(int argc, char** argv) {
             saw_artifact          = true;
         } else if (arg == "--corpus") {
             options.corpus_path = value("--corpus");
+        } else if (arg == "--cycle-corpus") {
+            options.cycle_corpus = true;
         } else if (arg == "-p" || arg == "--n-prompt") {
             auto parsed = parse_int_list(value("--n-prompt"), "n-prompt");
             options.n_prompt.insert(options.n_prompt.end(), parsed.begin(), parsed.end());
@@ -389,14 +392,7 @@ BenchOptions parse_args(int argc, char** argv) {
         }
     }
     if (!saw_artifact) { throw std::invalid_argument("--weights is required"); }
-    if (options.prefill_chunk % kPrefillChunkAlignment != 0) {
-        throw std::invalid_argument("--prefill-chunk must be a multiple of 128");
-    }
     product::validate_speculative_cli_options(options.speculative);
-    if (options.speculative.backend == SpeculativeBackend::Mtp &&
-        options.speculative.draft_tokens > 5) {
-        throw std::invalid_argument("Qwen3.6-27B MTP requires --draft-tokens in [1,5]");
-    }
     return options;
 }
 
@@ -454,12 +450,14 @@ std::uint32_t resolve_max_context(const std::vector<BenchTest>& tests,
     return override_max_context.value_or(required);
 }
 
-void validate_prompt_lengths(const std::vector<BenchTest>& tests, std::size_t corpus_tokens) {
+void validate_prompt_lengths(const std::vector<BenchTest>& tests, std::size_t corpus_tokens,
+                             bool cycle_corpus) {
     if (corpus_tokens < static_cast<std::size_t>(kDecodeSeedTokens)) {
         throw std::invalid_argument("corpus is too small to seed decode tests");
     }
     for (const BenchTest& test : tests) {
-        if (test.has_prefill() && static_cast<std::size_t>(test.n_prompt) > corpus_tokens) {
+        if (!cycle_corpus && test.has_prefill() &&
+            static_cast<std::size_t>(test.n_prompt) > corpus_tokens) {
             throw std::invalid_argument(test.label + " exceeds the token-id corpus");
         }
     }
@@ -478,11 +476,18 @@ std::vector<TokenId> load_corpus_ids(const std::string& path) {
     return ids;
 }
 
-std::vector<TokenId> prompt_slice(const std::vector<TokenId>& corpus, int n_prompt) {
-    if (n_prompt <= 0 || static_cast<std::size_t>(n_prompt) > corpus.size()) {
+std::vector<TokenId> prompt_slice(const std::vector<TokenId>& corpus, int n_prompt,
+                                  bool cycle_corpus) {
+    if (n_prompt <= 0 || corpus.empty() ||
+        (!cycle_corpus && static_cast<std::size_t>(n_prompt) > corpus.size())) {
         throw std::invalid_argument("invalid prompt slice length: " + std::to_string(n_prompt));
     }
-    return {corpus.begin(), corpus.begin() + n_prompt};
+    std::vector<TokenId> out;
+    out.reserve(static_cast<std::size_t>(n_prompt));
+    for (int index = 0; index < n_prompt; ++index) {
+        out.push_back(corpus[static_cast<std::size_t>(index) % corpus.size()]);
+    }
+    return out;
 }
 
 std::string decode_path_name(bool use_cuda_graph, const SpeculativeOptions& speculative) {
@@ -603,7 +608,8 @@ std::string format_table(const BenchEnvironment& env, const std::vector<TestResu
         << " (within workspace), graph allowance "
         << format_bytes(env.memory.cuda_graph_allowance_bytes) << ", KV payload "
         << format_bytes(env.memory.kv_payload_bytes) << '\n'
-        << "  corpus:     " << env.corpus_path << " (" << env.corpus_tokens << " tokens)\n"
+        << "  corpus:     " << env.corpus_path << " (" << env.corpus_tokens << " tokens"
+        << (env.cycle_corpus ? ", cycled" : "") << ")\n"
         << "  config:     max_context=" << env.max_context << " prefill_chunk=" << env.prefill_chunk
         << " kv_cache=" << kv_cache_name(env.kv_cache)
         << " spec=" << product::speculative_backend_name(env.speculative.backend)
@@ -727,7 +733,8 @@ std::string format_json(const BenchEnvironment& env, const std::string& command,
         << "    \"repetitions\": " << env.repetitions << ",\n"
         << "    \"warmup\": " << env.warmup << ",\n"
         << "    \"corpus_path\": \"" << json_escape(env.corpus_path) << "\",\n"
-        << "    \"corpus_tokens\": " << env.corpus_tokens << "\n"
+        << "    \"corpus_tokens\": " << env.corpus_tokens << ",\n"
+        << "    \"cycle_corpus\": " << (env.cycle_corpus ? "true" : "false") << "\n"
         << "  },\n"
         << "  \"tests\": [\n";
 

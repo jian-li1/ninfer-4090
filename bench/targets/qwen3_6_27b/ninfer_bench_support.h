@@ -15,7 +15,7 @@
 
 namespace ninfer::bench {
 
-inline constexpr int kSchemaVersion                   = 14;
+inline constexpr int kSchemaVersion                   = 15;
 inline constexpr std::string_view kArtifactType       = "ninfer_bench_report";
 inline constexpr std::string_view kDefaultCorpusPath  = "bench/fixtures/bench_corpus.ids";
 inline constexpr int kDecodeSeedTokens                = 1;
@@ -24,7 +24,6 @@ inline constexpr int kDefaultNGen                     = 128;
 inline constexpr int kDefaultRepetitions              = 5;
 inline constexpr int kDefaultWarmup                   = 1;
 inline constexpr std::uint32_t kDefaultPrefillChunk   = 1024;
-inline constexpr std::uint32_t kPrefillChunkAlignment = 128;
 
 enum class TestKind { Prefill, Decode, PrefillDecode };
 
@@ -66,6 +65,7 @@ struct BenchOptions {
     int device                     = 0;
     bool use_cuda_graph            = true;
     bool profile_measured          = false;
+    bool cycle_corpus              = false;
     OutputFormat output            = OutputFormat::Table;
     std::string output_file;
     bool help_requested = false;
@@ -112,6 +112,7 @@ struct BenchEnvironment {
     int warmup                                     = 0;
     std::string corpus_path;
     std::size_t corpus_tokens = 0;
+    bool cycle_corpus         = false;
 };
 
 BenchOptions parse_args(int argc, char** argv);
@@ -121,10 +122,12 @@ std::vector<BenchTest> expand_tests(const BenchOptions& options);
 std::uint32_t resolve_max_context(const std::vector<BenchTest>& tests,
                                   std::optional<std::uint32_t> override_max_context,
                                   const SpeculativeOptions& speculative, bool use_cuda_graph);
-void validate_prompt_lengths(const std::vector<BenchTest>& tests, std::size_t corpus_tokens);
+void validate_prompt_lengths(const std::vector<BenchTest>& tests, std::size_t corpus_tokens,
+                             bool cycle_corpus = false);
 
 std::vector<TokenId> load_corpus_ids(const std::string& path);
-std::vector<TokenId> prompt_slice(const std::vector<TokenId>& corpus, int n_prompt);
+std::vector<TokenId> prompt_slice(const std::vector<TokenId>& corpus, int n_prompt,
+                                  bool cycle_corpus = false);
 std::string decode_path_name(bool use_cuda_graph, const SpeculativeOptions& speculative);
 std::uint32_t decode_graph_prime_output_tokens(const SpeculativeOptions& speculative);
 std::uint32_t decode_graph_prime_required_context(const SpeculativeOptions& speculative);

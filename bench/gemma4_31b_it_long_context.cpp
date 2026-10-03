@@ -95,7 +95,7 @@ int main(int argc, char** argv) {
             options.prefill_tokens = parse_u32(next("--prefill"), 1, 262144, "--prefill");
             prefill_set = true;
         } else if (argument == "--chunk") {
-            options.chunk_tokens = parse_u32(next("--chunk"), 1, 64, "--chunk");
+            options.chunk_tokens = parse_u32(next("--chunk"), 1, 2048, "--chunk");
         } else if (argument == "--token") {
             options.input_token = static_cast<std::int32_t>(
                 parse_u32(next("--token"), 0, 262143, "--token"));

@@ -323,11 +323,38 @@ Phase 0 full-suite result remains the regression baseline; all Phase 2 affected 
   and 7,042,957,312 bytes available after startup. These are integration observations; Phase 16
   owns production context, throughput, memory, and comparison claims.
 
+## Phase 16 record
+
+- Raised the public and persistent Gemma prefill ceiling to 2,048 tokens and selected 1,024 as the
+  production chunk. Model projections and MLPs use the wide chunk while cache publication remains
+  sequential at the 64-token physical page boundary. Intermediate chunks no longer compute or
+  copy unused logits.
+- Added a D512 RK4V4-E8 prompt route through 32K visible keys, T5/T6 global verifier schedules,
+  exact activation-workspace planning, incremental prefix hashing, Engine timing publication, a
+  public semantic retrieval qualifier, and schema-15 long-corpus benchmark support.
+- The complete 262,144-token no-spec profile retains 1,353,383,936 bytes after startup. MTP1 with
+  the target and assistant resident retains 868,941,824 bytes. NInfer uses device allocations and
+  has no managed-memory allocation route.
+- Five-value semantic retrieval passed at 32K, 64K, 128K, 192K, 240K, and 260K. No-spec depth
+  decode ranges from 34.53 output tok/s at 32K to 26.90 at 262K. MTP1 improves the representative
+  mixed prompt from 40.5 to 52.4 tok/s with identical output and 64.1% acceptance.
+- Same-machine llama.cpp comparison shows NInfer 6.7% faster for target-only 32K retrieval decode
+  and 28.1% faster at approximately 256K cold prefill. NInfer remains 43.5% slower at 64K and
+  39.1% slower at 128K cold prefill; these two performance goals are explicitly rebaselined rather
+  than reported as passes.
+- The complete 132-test CTest campaign passed with the real Gemma artifact and available Qwen
+  artifact; 11 unavailable optional model bundles/formats were explicit skips. The D512 oracle,
+  real-Engine compute-sanitizer run, persistent route, and public retrieval matrix also passed.
+- Environment, artifact hash, methods, raw commands, result tables, llama.cpp differences,
+  profiler attribution, and rejected tuning candidates are recorded in the
+  [Phase 16 performance report](../benchmarks/gemma4-31b-4090-performance.md).
+
 ## Open blockers and limitations
 
 - The generated artifact remains local under `/dev/shm`; release packaging is part of Phase 17.
-- Production context/throughput sweeps, the public long-context retrieval matrix, and same-machine
-  comparison evidence remain Phase 16 work.
+- The 64K and 128K cold-prefill comparison goals remain unmet. Profiling identifies the Q4/A16
+  linear route and D512 global attention as the dominant opportunity; a future Q4 activation-
+  quantized route requires its own numerical and end-to-end qualification.
 - Full-checkpoint fixture regeneration requires restaging the two immutable source checkpoints;
   they are intentionally not committed to this repository.
 - Python reference tooling, when needed, must use a dedicated NInfer environment and the pinned

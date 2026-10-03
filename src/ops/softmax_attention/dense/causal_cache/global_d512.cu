@@ -26,20 +26,11 @@ constexpr int kThreads = 256;
 constexpr int kWarps = kThreads / 32;
 constexpr int kKeyTile = 16;
 constexpr int kPackedD = kD / 2;
-constexpr int kPrefillQueryTile = 4;
+constexpr int kPrefillQueryTile = 6;
 constexpr int kMaximumSplits = 32;
 constexpr std::uint32_t kKeysPerSplitTarget = 1024;
 
 static_assert(kWarps == kGroupSize);
-
-struct Gemma4D512H32Kv4 {
-    static constexpr int HeadDim = kD;
-    static constexpr int QHeads = kQHeads;
-    static constexpr int KVHeads = kKVHeads;
-    static constexpr int GroupSize = kGroupSize;
-    static constexpr int SmallTSplitScale = 1;
-    static constexpr int SmallTMaximumSplits = kMaximumSplits;
-};
 
 __device__ __forceinline__ std::int8_t unpack_i4(std::uint8_t packed, bool high) {
     const unsigned nibble = high ? packed >> 4 : packed & 0x0fu;
@@ -275,8 +266,8 @@ void launch_tensor_core_global_d512(
     const Tensor& q, const Tensor& positions, CausalAttentionExecutionEnvelope envelope,
     const PagedKVLayerView& cache, int splits, Tensor& partial_acc, Tensor& partial_m,
     Tensor& partial_l, cudaStream_t stream) {
-    using Geometry = Gemma4D512H32Kv4;
-    constexpr int kTensorCoreWarps = 8;
+    using Geometry = CausalD512H32Kv4;
+    constexpr int kTensorCoreWarps = TokenTile >= 5 ? 12 : 8;
     constexpr int kTensorCoreKeyBlock = 32;
     constexpr int kDynamicBytes = 4 * kTensorCoreKeyBlock * Geometry::HeadDim;
     static const cudaError_t attribute = cudaFuncSetAttribute(
@@ -343,6 +334,14 @@ void causal_full_attention_launch(const Tensor& q, const Tensor& positions,
         case 4:
             launch_tensor_core_global_d512<4>(q, positions, envelope, cache, splits, partial_acc,
                                                 partial_m, partial_l, stream);
+            break;
+        case 5:
+            launch_tensor_core_global_d512<5>(q, positions, envelope, cache, splits, partial_acc,
+                                               partial_m, partial_l, stream);
+            break;
+        case 6:
+            launch_tensor_core_global_d512<6>(q, positions, envelope, cache, splits, partial_acc,
+                                               partial_m, partial_l, stream);
             break;
         }
         const dim3 reduce_grid(kQHeads, static_cast<unsigned>(width));

@@ -72,11 +72,13 @@ ninfer::RequestOptions benchmark_request(const ninfer::bench::BenchTest& test) {
 
 ninfer::bench::RepTiming run_repetition(ninfer::Engine& engine,
                                         const ninfer::bench::BenchTest& test,
-                                        const std::vector<ninfer::TokenId>& corpus) {
+                                        const std::vector<ninfer::TokenId>& corpus,
+                                        bool cycle_corpus) {
     const int prompt_tokens = test.kind == ninfer::bench::TestKind::Decode
                                   ? ninfer::bench::kDecodeSeedTokens
                                   : test.n_prompt;
-    auto prompt = engine.prepare_tokens(ninfer::bench::prompt_slice(corpus, prompt_tokens), false);
+    auto prompt = engine.prepare_tokens(
+        ninfer::bench::prompt_slice(corpus, prompt_tokens, cycle_corpus), false);
     ninfer::GenerationResult generated =
         engine.generate(std::move(prompt), benchmark_request(test));
 
@@ -98,12 +100,12 @@ ninfer::bench::RepTiming run_repetition(ninfer::Engine& engine,
 }
 
 void prime_decode_graph(ninfer::Engine& engine, ninfer::bench::BenchEnvironment& env,
-                        const std::vector<ninfer::TokenId>& corpus) {
+                        const std::vector<ninfer::TokenId>& corpus, bool cycle_corpus) {
     if (!env.use_cuda_graph || env.decode_graph_prime_output_tokens == 0) { return; }
     const int decode_tokens = static_cast<int>(env.decode_graph_prime_output_tokens - 1);
     const ninfer::bench::BenchTest prime{ninfer::bench::TestKind::Decode, 0, decode_tokens,
                                          "decode-graph-prime"};
-    (void)run_repetition(engine, prime, corpus);
+    (void)run_repetition(engine, prime, corpus, cycle_corpus);
     env.decode_graph_primed = true;
 }
 
@@ -143,7 +145,7 @@ int main(int argc, char** argv) {
             throw std::invalid_argument(
                 "--profile-measured requires exactly one benchmark test and -r 1");
         }
-        ninfer::bench::validate_prompt_lengths(tests, corpus.size());
+        ninfer::bench::validate_prompt_lengths(tests, corpus.size(), options.cycle_corpus);
         const std::uint32_t max_context = ninfer::bench::resolve_max_context(
             tests, options.max_context, options.speculative, options.use_cuda_graph);
 
@@ -170,6 +172,7 @@ int main(int argc, char** argv) {
         env.warmup                   = options.warmup;
         env.corpus_path              = options.corpus_path;
         env.corpus_tokens            = corpus.size();
+        env.cycle_corpus             = options.cycle_corpus;
         if (options.use_cuda_graph && has_decode_tests(tests)) {
             env.decode_graph_prime_output_tokens =
                 ninfer::bench::decode_graph_prime_output_tokens(options.speculative);
@@ -183,7 +186,7 @@ int main(int argc, char** argv) {
         env.load   = engine.load_summary();
         env.memory = engine.memory_summary();
 
-        prime_decode_graph(engine, env, corpus);
+        prime_decode_graph(engine, env, corpus, options.cycle_corpus);
 
         std::vector<ninfer::bench::TestResult> results;
         results.reserve(tests.size());
@@ -197,7 +200,7 @@ int main(int argc, char** argv) {
             result.test = test;
             engine.reset_memory_peaks();
             for (int warmup = 0; warmup < options.warmup; ++warmup) {
-                (void)run_repetition(engine, test, corpus);
+                (void)run_repetition(engine, test, corpus, options.cycle_corpus);
             }
             result.reps.reserve(static_cast<std::size_t>(options.repetitions));
             if (options.profile_measured) {
@@ -205,7 +208,8 @@ int main(int argc, char** argv) {
                 require_cuda(cudaProfilerStart(), "cudaProfilerStart");
             }
             for (int repetition = 0; repetition < options.repetitions; ++repetition) {
-                result.reps.push_back(run_repetition(engine, test, corpus));
+                result.reps.push_back(run_repetition(engine, test, corpus,
+                                                     options.cycle_corpus));
             }
             if (options.profile_measured) {
                 require_cuda(cudaDeviceSynchronize(), "profile post-boundary synchronize");

@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -125,8 +126,7 @@ using RetainedSessionSnapshot  = qwen3_6::RetainedSessionSnapshot;
 using SessionSnapshotTraffic   = qwen3_6::SessionSnapshotTraffic;
 
 constexpr std::uint32_t kPageTokens = static_cast<std::uint32_t>(kPagedKVPageSize);
-constexpr std::uint32_t kMaximumPrefillChunk = 64;
-constexpr std::size_t kActivationWorkspaceBytes = 32ULL * 1024ULL * 1024ULL;
+constexpr std::uint32_t kMaximumPrefillChunk = 2048;
 constexpr ops::AttentionHeadGeometry kFullGeometry{
     TextConfig::full_head_dim, TextConfig::query_heads, TextConfig::full_kv_heads};
 
@@ -141,19 +141,20 @@ std::size_t checked_add(std::size_t left, std::size_t right, const char* label) 
     return left + right;
 }
 
-std::array<std::uint64_t, 2> prefix_digest(std::span<const TokenId> tokens) noexcept {
-    std::uint64_t first  = 1469598103934665603ULL;
-    std::uint64_t second = 0x9e3779b97f4a7c15ULL;
-    for (TokenId token : tokens) {
-        const std::uint32_t value = static_cast<std::uint32_t>(token);
-        for (unsigned shift = 0; shift < 32; shift += 8) {
-            first ^= static_cast<std::uint8_t>(value >> shift);
-            first *= 1099511628211ULL;
-        }
-        second ^= static_cast<std::uint64_t>(value) + 0x9e3779b97f4a7c15ULL +
-                  (second << 6U) + (second >> 2U);
+void append_prefix_digest(std::array<std::uint64_t, 2>& digest, TokenId token) noexcept {
+    const std::uint32_t value = static_cast<std::uint32_t>(token);
+    for (unsigned shift = 0; shift < 32; shift += 8) {
+        digest[0] ^= static_cast<std::uint8_t>(value >> shift);
+        digest[0] *= 1099511628211ULL;
     }
-    return {first, second};
+    digest[1] ^= static_cast<std::uint64_t>(value) + 0x9e3779b97f4a7c15ULL +
+                 (digest[1] << 6U) + (digest[1] >> 2U);
+}
+
+std::array<std::uint64_t, 2> prefix_digest(std::span<const TokenId> tokens) noexcept {
+    std::array<std::uint64_t, 2> digest{1469598103934665603ULL, 0x9e3779b97f4a7c15ULL};
+    for (TokenId token : tokens) append_prefix_digest(digest, token);
+    return digest;
 }
 
 std::string digest_hex(std::span<const TokenId> tokens) {
@@ -191,6 +192,17 @@ struct PlannedLayout {
     std::size_t total_bytes = 0;
 };
 
+std::size_t activation_workspace_bytes(std::uint32_t prefill_chunk,
+                                       std::uint32_t mtp_draft_tokens) {
+    std::size_t bytes = runtime_activation_workspace_capacity_bytes(
+        static_cast<std::int32_t>(prefill_chunk), false);
+    if (mtp_draft_tokens != 0) {
+        bytes = std::max(bytes, runtime_activation_workspace_capacity_bytes(
+                                    static_cast<std::int32_t>(mtp_draft_tokens + 1U), true));
+    }
+    return bytes;
+}
+
 PlannedLayout plan_layout(std::uint32_t maximum_context, std::uint32_t prefill_chunk,
                           std::uint32_t page_groups, std::uint32_t concurrency,
                           bool use_mtp) {
@@ -201,8 +213,10 @@ PlannedLayout plan_layout(std::uint32_t maximum_context, std::uint32_t prefill_c
     out.cache_bytes = builder.finish(256, "Gemma heterogeneous KV arena");
     out.attention_bytes = ops::causal_full_softmax_attention_workspace_capacity_bytes(
         kFullGeometry, KvCacheStorage::RK4V4E8, {1, maximum_context}, 1,
-        static_cast<std::int32_t>(prefill_chunk));
-    out.total_bytes = checked_add(out.cache_bytes, kActivationWorkspaceBytes,
+        static_cast<std::int32_t>(std::min(prefill_chunk, kPageTokens)));
+    const std::size_t activation_bytes = activation_workspace_bytes(
+        prefill_chunk, use_mtp ? AssistantConfig::maximum_draft_size : 0U);
+    out.total_bytes = checked_add(out.cache_bytes, activation_bytes,
                                   "Gemma runtime reservation overflow");
     out.total_bytes = checked_add(out.total_bytes, std::max<std::size_t>(out.attention_bytes, 256),
                                   "Gemma runtime reservation overflow");
@@ -284,10 +298,14 @@ finalize_planner(std::unique_ptr<SequencePlannerImpl> planner, std::uint32_t pag
                                       ? 2ULL * TextConfig::hidden * dtype_size(DType::BF16) *
                                             options.max_concurrency
                                       : 0;
-    plan->workspace = {.activation = kActivationWorkspaceBytes,
+    const std::size_t activation_bytes = activation_workspace_bytes(
+        chunk, options.speculative.backend == SpeculativeBackend::Mtp
+                   ? options.speculative.draft_tokens
+                   : 0U);
+    plan->workspace = {.activation = activation_bytes,
                        .attention = std::max<std::size_t>(layout.attention_bytes, 256),
                        .mtp_state = mtp_state,
-                       .capacity = checked_add(kActivationWorkspaceBytes,
+                       .capacity = checked_add(activation_bytes,
                                                std::max<std::size_t>(layout.attention_bytes, 256),
                                                "Gemma workspace capacity overflow")};
     plan->workspace.capacity = checked_add(plan->workspace.capacity, mtp_state,
@@ -472,6 +490,7 @@ public:
         Tensor assistant_feedback;
         bool mtp_enabled = false;
         SpeculativeStats speculative;
+        GenerationTimings timings;
     };
 
     struct Materialization {
@@ -522,10 +541,11 @@ public:
     }
 
     [[nodiscard]] TokenId run_and_sample(Lane& lane, std::uint32_t row,
-                                         std::span<const TokenId> tokens) {
+                                         std::span<const TokenId> tokens,
+                                         bool produce_logits = true) {
         const std::uint32_t first = cache_.frontier(static_cast<std::int32_t>(row));
         std::vector<float> logits;
-        if (plan_.use_cuda_graph && tokens.size() == 1) {
+        if (produce_logits && plan_.use_cuda_graph && tokens.size() == 1) {
             auto& graph = *ordinary_graphs_[row];
             if (!graph.ready()) {
                 graph.capture(weights_.target, cache_, static_cast<std::int32_t>(row),
@@ -537,9 +557,10 @@ public:
         } else {
             logits = gemma4_31b_it::detail::execute_runtime_chunk(
                 weights_.target, cache_, static_cast<std::int32_t>(row), first, tokens,
-                plan_.capacity, activations_, attention_, device_.stream, true,
-                lane.mtp_enabled ? lane.target_hidden : Tensor{});
+                plan_.capacity, activations_, attention_, device_.stream, produce_logits,
+                produce_logits && lane.mtp_enabled ? lane.target_hidden : Tensor{});
         }
+        if (!produce_logits) { return -1; }
         return gemma4_31b_it::detail::sample_logits(logits, lane.sampling, lane.token_counts,
                                                     first + static_cast<std::uint32_t>(tokens.size()));
     }
@@ -1054,9 +1075,10 @@ Program<GemmaVariant>::plan_request(const PreparedPrompt& prompt,
         (base->summary.prompt_tokens + impl_->plan_.prefill_chunk - 1U) /
             impl_->plan_.prefill_chunk + decode_units;
     base->prefix_digests.resize(data.token_ids.size() + 1U);
+    std::array<std::uint64_t, 2> digest{1469598103934665603ULL, 0x9e3779b97f4a7c15ULL};
     for (std::size_t frontier = 1; frontier <= data.token_ids.size(); ++frontier) {
-        base->prefix_digests[frontier] = gemma4_31b_it::detail::prefix_digest(
-            std::span<const TokenId>(data.token_ids).first(frontier));
+        gemma4_31b_it::detail::append_prefix_digest(digest, data.token_ids[frontier - 1U]);
+        base->prefix_digests[frontier] = digest;
     }
     return RequestBasePlan<GemmaVariant>(std::move(base));
 }
@@ -1293,7 +1315,10 @@ template <> PrefillProgress<GemmaVariant> Program<GemmaVariant>::advance_prefill
     const std::uint32_t processed = next - lane.cursor;
     TokenId sampled = -1;
     if (!chunk.empty()) {
-        sampled = impl_->run_and_sample(lane, row, chunk);
+        const auto started = std::chrono::steady_clock::now();
+        sampled = impl_->run_and_sample(lane, row, chunk, complete);
+        lane.timings.prefill_seconds += std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - started).count();
         lane.ledger.insert(lane.ledger.end(), chunk.begin(), chunk.end());
     }
     lane.cursor = next;
@@ -1334,6 +1359,7 @@ template <> PendingBatch<GemmaVariant> Program<GemmaVariant>::decode(
         impl_->pending_mtp_drafted_[row_index] = 0;
         impl_->pending_mtp_accepted_[row_index] = 0;
         auto& lane = impl_->require_sequence(sequences[row_index]);
+        const auto decode_started = std::chrono::steady_clock::now();
         if (budgets[row_index].generated_tokens_remaining == 0 || !lane.current_token) {
             throw std::logic_error("Gemma decode row has no committed input token");
         }
@@ -1386,6 +1412,8 @@ template <> PendingBatch<GemmaVariant> Program<GemmaVariant>::decode(
             lane.ledger.push_back(input);
             impl_->pending_counts_[row_index] = 1;
         }
+        lane.timings.decode_seconds += std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - decode_started).count();
         impl_->pending_rows_[row_index] = sequences[row_index];
     }
     impl_->pending_row_count_ = sequences.size();
@@ -1416,6 +1444,7 @@ template <> CommitResult<GemmaVariant> Program<GemmaVariant>::commit(
         const std::uint32_t lane_index = GemmaAccess::lane(rows[row]).value;
         if (decision.cancelled) {
             impl_->pending_mtp_transactions_[row].reset();
+            out.rows[row].timings = lane.timings;
             out.rows[row].speculative = lane.speculative;
             impl_->cache_.deactivate(static_cast<std::int32_t>(lane_index));
             impl_->reset_lane(lane_index);
@@ -1457,6 +1486,7 @@ template <> CommitResult<GemmaVariant> Program<GemmaVariant>::commit(
                 ++lane.token_counts[static_cast<std::size_t>(tokens[token_base + accepted])];
             }
             out.rows[row].speculative = lane.speculative;
+            out.rows[row].timings = lane.timings;
             out.rows[row].disposition = decision.terminal
                 ? runtime::CommitDisposition::Finishable
                 : runtime::CommitDisposition::Active;
@@ -1495,6 +1525,7 @@ template <> runtime::ExecutionTiming Program<GemmaVariant>::append_forced_tokens
     }
     for (std::size_t row = 0; row < sequences.size(); ++row) {
         auto& lane = impl_->require_sequence(sequences[row]);
+        const auto decode_started = std::chrono::steady_clock::now();
         if (!lane.current_token) { throw std::logic_error("Gemma control row has no input token"); }
         std::vector<TokenId> inputs;
         inputs.reserve(row_stride + 1U);
@@ -1503,6 +1534,8 @@ template <> runtime::ExecutionTiming Program<GemmaVariant>::append_forced_tokens
         inputs.insert(inputs.end(), controls.begin(), controls.end());
         lane.ready_token = impl_->run_and_sample(lane, GemmaAccess::lane(sequences[row]).value,
                                                  inputs);
+        lane.timings.decode_seconds += std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - decode_started).count();
         lane.ledger.insert(lane.ledger.end(), inputs.begin(), inputs.end());
         for (TokenId token : controls) ++lane.token_counts[static_cast<std::size_t>(token)];
         lane.current_token = controls.back();
@@ -1517,6 +1550,7 @@ template <> FinishResult<GemmaVariant> Program<GemmaVariant>::finish(
         auto& lane = impl_->require_sequence(sequence);
         const std::uint32_t row = GemmaAccess::lane(sequence).value;
         out.status = runtime::ConsumeStatus::Consumed;
+        out.timings = lane.timings;
         out.speculative = lane.speculative;
         if (!lane.publish_continuation) {
             impl_->cache_.deactivate(static_cast<std::int32_t>(row));
@@ -1567,6 +1601,7 @@ template <> AbortResult<GemmaVariant> Program<GemmaVariant>::abort(
     try {
         auto& lane = impl_->require_sequence(sequence);
         const std::uint32_t row = GemmaAccess::lane(sequence).value;
+        out.timings = lane.timings;
         out.speculative = lane.speculative;
         impl_->cache_.deactivate(static_cast<std::int32_t>(row));
         impl_->reset_lane(row);

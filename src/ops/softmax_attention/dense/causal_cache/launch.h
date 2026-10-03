@@ -93,6 +93,10 @@ void causal_full_attention_launch(
     const PagedKVLayerView& cache, Tensor& partial_acc, Tensor& partial_m, Tensor& partial_l,
     Tensor& out, cudaStream_t stream);
 
+void causal_full_prompt_attention_launch(const Tensor& q, const Tensor& positions, float scale,
+                                         const PagedKVLayerView& cache, Tensor& out,
+                                         cudaStream_t stream);
+
 void causal_sliding_attention_launch(const Tensor& q, const Tensor& positions, float scale,
                                      const PagedKVLayerView& cache, Tensor& out,
                                      cudaStream_t stream);

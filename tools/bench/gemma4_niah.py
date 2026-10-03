@@ -94,7 +94,8 @@ def gpu_used_mib() -> int | None:
 
 def parse_metrics(stdout: str) -> tuple[dict[str, str], list[int]]:
     metric_line = next(
-        (line for line in stdout.splitlines() if line.startswith("GEMMA4_LONG_CONTEXT ")), None
+        (line for line in stdout.splitlines() if line.startswith("GEMMA4_ENGINE_RETRIEVAL ")),
+        None,
     )
     generated_line = next(
         (line for line in stdout.splitlines() if line.startswith("GEMMA4_GENERATED_IDS=")), None
@@ -148,8 +149,8 @@ def main() -> int:
                 "262144",
                 "--tokens-file",
                 str(args.tokens_out),
-                "--chunk",
-                "64",
+                "--prefill-chunk",
+                "1024",
                 "--generate",
                 str(args.generate),
             ],

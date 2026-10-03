@@ -80,6 +80,13 @@ if(NINFER_BUILD_GEMMA4_31B_IT)
     ${PROJECT_SOURCE_DIR}/src/targets/gemma4_31b_it/export
     ${PROJECT_SOURCE_DIR}/src/targets/gemma4_31b_it/impl)
   target_link_libraries(ninfer_gemma4_31b_it_long_context PRIVATE ninfer_engine ${NINFER_CUDART_TARGET})
+
+  # Deterministic semantic long-context qualifier through the public Engine route.
+  add_executable(ninfer_gemma4_31b_it_retrieval gemma4_31b_it_retrieval.cpp)
+  target_include_directories(ninfer_gemma4_31b_it_retrieval PRIVATE
+    ${PROJECT_SOURCE_DIR}/include)
+  target_link_libraries(ninfer_gemma4_31b_it_retrieval PRIVATE
+    ninfer_engine ${NINFER_CUDART_TARGET})
 endif()
 ninfer_add_op_bench(ninfer_prepare_masked_block_bench
   SOURCES ops/prepare_masked_block_bench.cu)
