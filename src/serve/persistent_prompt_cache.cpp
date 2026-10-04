@@ -288,7 +288,10 @@ void PersistentPromptCache::store(std::span<const TokenId> ledger,
     const fs::path snapshot   = entries_directory_ / (digest + ".bin");
     const fs::path token_file = entries_directory_ / (digest + ".tok");
     const SlotSaveResult saved = save_snapshot(snapshot, digest);
-    if (saved.tokens != ledger.size() || saved.session_digest != digest) {
+    // `ledger` is the reusable prefix used for catalog matching. The native snapshot may retain
+    // a longer completed session (for example, the assistant response after the pre-response
+    // rewrite checkpoint), so its token count is intentionally allowed to exceed ledger.size().
+    if (saved.tokens < ledger.size() || saved.session_digest != digest) {
         std::error_code ignored;
         fs::remove(snapshot, ignored);
         fs::remove(token_file, ignored);

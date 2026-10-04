@@ -378,7 +378,11 @@ void GenerationService::maybe_restore_persistent_prefix(
         try {
             const ninfer::SlotRestoreResult restored =
                 engine_->restore_slot(*destination, match->snapshot_path.string());
-            if (restored.session_digest != match->digest || restored.tokens != match->tokens) {
+            // The catalog key is the full retained-session digest, while match->tokens is the
+            // reusable pre-response checkpoint frontier. A native snapshot intentionally retains
+            // the completed response as well as its rewrite checkpoint, so restored.tokens can be
+            // larger than match->tokens. Only the full snapshot digest must match here.
+            if (restored.session_digest != match->digest) {
                 persistent_cache_->invalidate(*match);
                 try {
                     (void)engine_->erase_slot(*destination, restored.session_digest);
@@ -577,25 +581,53 @@ GenerationOutcome GenerationService::run(PreparedRequest& prepared, const Stream
     if (persistent_cache_ != nullptr && !prepared.persistent_cache_prompt_tokens.empty() &&
         result.slot >= 0 && !result.session_digest.empty()) {
         try {
-            std::vector<ninfer::TokenId> ledger;
-            ledger.reserve(prepared.persistent_cache_prompt_tokens.size() +
-                           result.generated_token_ids.size());
-            ledger.insert(ledger.end(), prepared.persistent_cache_prompt_tokens.begin(),
-                          prepared.persistent_cache_prompt_tokens.end());
-            ledger.insert(ledger.end(), result.generated_token_ids.begin(),
-                          result.generated_token_ids.end());
-
             std::lock_guard lock(persistent_cache_operation_mutex_);
-            persistent_cache_->store(
-                ledger, result.session_digest,
-                [&](const std::filesystem::path& path, std::string_view digest) {
-                    return engine_->save_slot(static_cast<std::uint32_t>(result.slot), path.string(),
-                                              std::string(digest));
-                });
-            if (logger_) {
-                logger_->info("{}", "persistent KV cache saved slot=" +
-                                       std::to_string(result.slot) + " tokens=" +
-                                       std::to_string(ledger.size()));
+
+            // save_slot() serializes the completed retained session, including the generated
+            // assistant response. That snapshot also contains the retained rewrite checkpoint
+            // captured immediately before generation. Index the disk entry by that checkpoint's
+            // token prefix rather than by the completed response ledger. After a restart, an
+            // identical prompt can therefore restore the snapshot and let the Engine select the
+            // rewrite checkpoint instead of prefilling the whole prompt again.
+            const std::vector<ninfer::SlotState> states = engine_->slot_states();
+            const std::uint32_t slot = static_cast<std::uint32_t>(result.slot);
+            if (slot >= states.size()) {
+                throw std::logic_error("persistent cache result slot is outside the slot catalog");
+            }
+            const ninfer::SlotState& state = states[slot];
+            if (!state.retained || state.session_digest != result.session_digest) {
+                throw std::logic_error(
+                    "persistent cache result slot no longer retains the completed session");
+            }
+
+            const std::size_t prompt_tokens = prepared.persistent_cache_prompt_tokens.size();
+            const ninfer::SlotCheckpoint* checkpoint = nullptr;
+            for (const ninfer::SlotCheckpoint& candidate : state.checkpoints) {
+                if (candidate.frontier == 0 || candidate.frontier > prompt_tokens) { continue; }
+                if (checkpoint == nullptr || candidate.frontier > checkpoint->frontier) {
+                    checkpoint = &candidate;
+                }
+            }
+
+            if (checkpoint != nullptr) {
+                const std::span<const ninfer::TokenId> reusable_prefix(
+                    prepared.persistent_cache_prompt_tokens.data(), checkpoint->frontier);
+                persistent_cache_->store(
+                    reusable_prefix, result.session_digest,
+                    [&](const std::filesystem::path& path, std::string_view digest) {
+                        return engine_->save_slot(slot, path.string(), std::string(digest));
+                    });
+                if (logger_) {
+                    logger_->info("{}", "persistent KV cache saved slot=" +
+                                           std::to_string(result.slot) + " reusable_tokens=" +
+                                           std::to_string(checkpoint->frontier) +
+                                           " retained_tokens=" +
+                                           std::to_string(state.cached_tokens));
+                }
+            } else if (logger_) {
+                logger_->debug(
+                    "{}", "persistent KV cache skipped save: no pre-response checkpoint for slot=" +
+                              std::to_string(result.slot));
             }
         } catch (const std::exception& exception) {
             // Persistence is write-through for durability, but it is not part of the inference
