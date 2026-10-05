@@ -1098,6 +1098,7 @@ struct SlotState {
     bool retained                = false;
     std::uint32_t prompt_tokens  = 0;
     std::uint32_t cached_tokens  = 0;
+    std::uint32_t processed_prompt_tokens = 0;
     std::string session_digest;
     std::vector<SlotCheckpoint> checkpoints;
 };

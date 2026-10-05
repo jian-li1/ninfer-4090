@@ -98,6 +98,10 @@ if(NINFER_BUILD_APPS OR BUILD_TESTING)
   add_subdirectory(third_party/spdlog)
 endif()
 
+if(NINFER_BUILD_SERVE)
+    include(cmake/ninfer_ui.cmake)
+endif()
+
 # --- Subdirectories ----------------------------------------------------------
 add_subdirectory(src)
 if(NINFER_BUILD_APPS)

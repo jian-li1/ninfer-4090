@@ -803,12 +803,16 @@ private:
             const std::optional<std::uint32_t> publication =
                 resources_.lane_publication_slot(LaneId{lane});
             if (!publication || *publication >= slot_snapshot.size()) { continue; }
+            const auto& request = slots_[lane];
             SlotState& state    = slot_snapshot[*publication];
             state.processing    = true;
-            state.prompt_tokens = slots_[lane]->prompt_summary.prompt_tokens;
-            if (slots_[lane]->begin) {
-                state.cached_tokens = slots_[lane]->begin->reused_prompt_tokens;
+            state.prompt_tokens = request->prompt_summary.prompt_tokens;
+            if (request->begin) {
+                state.cached_tokens = request->begin->reused_prompt_tokens;
             }
+            // Live llama.cpp-compatible prompt-processing counter. This is the number of
+            // non-cached prompt tokens that have completed prefill for the active request.
+            state.processed_prompt_tokens = request->computed_prompt_tokens;
         }
         detail_range.reset();
         record_detail(&RuntimeHostWorkStats::stats_publication_ns,

@@ -132,6 +132,14 @@ Json prompt_progress_json(std::uint32_t total, std::uint32_t cached, std::uint32
                 {"time_ms", elapsed_ns / 1000000ULL}};
 }
 
+Json prompt_progress_timings_json(std::uint32_t processed, std::uint32_t cached,
+                                  std::uint64_t elapsed_ns) {
+    constexpr double kNanosecondsToMilliseconds = 1.0e-6;
+    const double prompt_ms =
+        static_cast<double>(elapsed_ns) * kNanosecondsToMilliseconds;
+    return timings_json(make_completion_timings(processed, cached, 0, prompt_ms, 0.0));
+}
+
 const char* finish_reason(ninfer::FinishReason reason) {
     switch (reason) {
     case ninfer::FinishReason::OutputLimit:
@@ -317,6 +325,13 @@ std::string OpenAIChatStream::initial_prompt_progress() {
     if (include_usage_) { payload["usage"] = nullptr; }
     payload["prompt_progress"] =
         prompt_progress_json(prompt_tokens_, cached_tokens_, cached_tokens_, 0);
+    if (timings_per_token_) {
+        // llama-server attaches a live timings snapshot to prompt-progress chunks. The WebUI
+        // context gauge consumes prompt_n + cache_n from these snapshots while prefill is still
+        // running; prompt_progress alone drives the progress details but not every context-gauge
+        // path in the pinned UI release.
+        payload["timings"] = prompt_progress_timings_json(cached_tokens_, cached_tokens_, 0);
+    }
     return event(std::move(payload));
 }
 
@@ -337,6 +352,13 @@ std::string OpenAIChatStream::prompt_progress(const ninfer::PromptProgress& prog
     payload["prompt_progress"] =
         prompt_progress_json(progress.total_prompt_tokens, progress.reused_prompt_tokens,
                              progress.processed_prompt_tokens, progress.elapsed_ns);
+    if (timings_per_token_) {
+        // Match llama-server's live prefill chunks: prompt_n is the freshly evaluated portion,
+        // cache_n is the reused prefix, and together they equal the current processed frontier.
+        // predicted_n remains zero until decoding begins.
+        payload["timings"] = prompt_progress_timings_json(
+            progress.processed_prompt_tokens, progress.reused_prompt_tokens, progress.elapsed_ns);
+    }
     return event(std::move(payload));
 }
 
