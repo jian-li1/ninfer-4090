@@ -233,8 +233,8 @@ public:
 
         direct_file_ = ::CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
                                      OPEN_EXISTING,
-                                     FILE_ATTRIBUTE_NORMAL | FILE_FLAG_NO_BUFFERING |
-                                         FILE_FLAG_OVERLAPPED | FILE_FLAG_SEQUENTIAL_SCAN,
+                                     FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OVERLAPPED |
+                                         FILE_FLAG_SEQUENTIAL_SCAN,
                                      nullptr);
         if (direct_file_ == INVALID_HANDLE_VALUE) {
             const auto error = ::GetLastError();
@@ -248,7 +248,7 @@ public:
                                     "CreateFileW direct " + path.string());
         }
 #else
-        const int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_DIRECT);
+        const int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
         if (fd < 0) {
             throw std::system_error(errno, std::generic_category(), "open " + path.string());
         }
