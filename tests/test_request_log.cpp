@@ -49,6 +49,8 @@ int main() {
     options.api_key                        = "must-not-appear";
     options.model_id_override              = "deployment-alias";
     options.request_log_jsonl              = "requests.jsonl";
+    options.cache_dir                      = "/var/cache/ninfer";
+    options.cache_dir_max_mib              = 32768;
     options.max_context                    = 262144;
     options.kv_capacity                    = ninfer::KvCapacityPolicy::explicit_capacity(524288);
     options.prefill_chunk                  = 1024;
@@ -176,6 +178,9 @@ int main() {
         check(server.at("engine").at("log_stats_interval_ms") == 2500, "stats interval missing");
     failures += check(server.at("server").at("request_log_jsonl") == "requests.jsonl",
                       "request log path missing");
+    failures += check(server.at("server").at("cache_dir") == "/var/cache/ninfer" &&
+                          server.at("server").at("cache_dir_max_mib") == 32768,
+                      "persistent cache startup configuration missing");
     failures += check(server.at("server").at("default_thinking_budget") == 512,
                       "server thinking budget missing");
     failures += check(server.at("engine").at("kv_cache") == "fp8-e4m3-row256", "KV type missing");

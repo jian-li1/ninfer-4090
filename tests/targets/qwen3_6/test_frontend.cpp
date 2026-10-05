@@ -1114,6 +1114,9 @@ int test_text_and_image_prepare(const Frontend& frontend) {
     const std::vector<ninfer::TokenId> expected{248045, 30, 0, 248046, 32, 248045, 31, 248068, 32};
     int failures =
         check(text_data.token_ids == expected, "text frontend did not render/tokenize chat");
+    failures += check(std::equal(text.token_ids().begin(), text.token_ids().end(), expected.begin(),
+                                 expected.end()),
+                      "prepared prompt did not expose its exact rendered token ledger");
     failures += check(text_data.identity.rewrite_checkpoint &&
                           text_data.identity.rewrite_checkpoint->kind ==
                               ninfer::targets::qwen3_6::RewriteCheckpointKind::TurnClosure &&

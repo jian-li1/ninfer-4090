@@ -38,6 +38,8 @@ int main() {
                       "request JSONL logging is not disabled by default");
     failures += check(defaults.slot_save_path.empty(),
                       "slot persistence is not disabled by default");
+    failures += check(defaults.cache_dir.empty() && defaults.cache_dir_max_mib == 0,
+                      "transparent persistent cache is not disabled by default");
     failures += check(!defaults.deprecated_turn_checkpoints_given,
                       "--turn-checkpoints is not reported when it was never passed");
 
@@ -104,6 +106,42 @@ int main() {
     }
     failures += check(auto_save_rejected,
                       "--auto-save-evicted without --slot-save-path was not rejected");
+
+    const ServeOptions persistent =
+        parse({"ninfer-serve", "model.ninfer", "--cache-dir", "/var/cache/ninfer",
+               "--cache-dir-max", "32768"});
+    failures += check(persistent.cache_dir == "/var/cache/ninfer" &&
+                          persistent.cache_dir_max_mib == 32768,
+                      "persistent cache options were not applied");
+    failures += check(serve_usage_text("ninfer-serve").find("--cache-dir-max") !=
+                          std::string::npos,
+                      "serve help omits persistent cache options");
+    const auto persistent_rejected = [&](std::vector<std::string> arguments) {
+        try {
+            (void)parse(std::move(arguments));
+        } catch (const std::invalid_argument&) { return true; }
+        return false;
+    };
+    failures += check(
+        persistent_rejected(
+            {"ninfer-serve", "model.ninfer", "--cache-dir-max", "1"}),
+        "--cache-dir-max without --cache-dir was not rejected");
+    failures += check(
+        persistent_rejected({"ninfer-serve", "model.ninfer", "--cache-dir", "/tmp/cache",
+                             "--max-concurrency", "2"}),
+        "persistent cache accepted unsupported concurrent generation");
+    failures += check(
+        persistent_rejected({"ninfer-serve", "model.ninfer", "--cache-dir", "/tmp/cache",
+                             "--no-prefix-reuse"}),
+        "persistent cache accepted disabled prefix reuse");
+    failures += check(
+        persistent_rejected({"ninfer-serve", "model.ninfer", "--cache-dir", "/tmp/cache",
+                             "--slot-save-path", "/tmp/slots", "--auto-save-evicted"}),
+        "persistent cache accepted conflicting slot auto-save");
+    failures += check(
+        persistent_rejected({"ninfer-serve", "model.ninfer", "--cache-dir", "/tmp/cache",
+                             "--cache-dir-max", "17592186044416"}),
+        "persistent cache accepted an overflowing MiB limit");
     failures += check(defaults.context_cost_presets.empty(),
                       "external context-cost presets are unexpectedly configured by default");
     failures += check(defaults.log_stats_interval_ms == 5000,

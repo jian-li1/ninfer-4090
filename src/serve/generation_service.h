@@ -8,6 +8,7 @@ class logger;
 }
 
 #include "ninfer/engine.h"
+#include "serve/persistent_prompt_cache.h"
 #include "serve/request.h"
 #include "serve/serve_options.h"
 
@@ -16,7 +17,9 @@ class logger;
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <optional>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -98,6 +101,9 @@ struct PreparedRequest {
     std::optional<ninfer::ReasoningEffort> effective_reasoning_effort;
     bool preserve_thinking = false;
     std::shared_ptr<RequestLifetime> lifetime;
+    // Rendered text ledger retained until run() can publish the completed native snapshot.
+    // Empty for media, warmup, and cache-disabled requests.
+    std::vector<ninfer::TokenId> persistent_cache_prompt_tokens;
 };
 
 class GenerationService {
@@ -141,15 +147,18 @@ public:
 
     [[nodiscard]] ninfer::SlotSaveResult slot_save(std::uint32_t slot, const std::string& path,
                                                    const std::string& expected_digest = {}) {
+        std::lock_guard lock(persistent_cache_operation_mutex_);
         return engine_->save_slot(slot, path, expected_digest);
     }
 
     [[nodiscard]] ninfer::SlotRestoreResult slot_restore(std::uint32_t slot,
                                                          const std::string& path) {
+        std::lock_guard lock(persistent_cache_operation_mutex_);
         return engine_->restore_slot(slot, path);
     }
 
     std::uint32_t slot_erase(std::uint32_t slot, const std::string& expected_digest = {}) {
+        std::lock_guard lock(persistent_cache_operation_mutex_);
         return engine_->erase_slot(slot, expected_digest);
     }
 
@@ -196,6 +205,7 @@ private:
                  CacheParticipation cache_participation, DeadlinePolicy deadline_policy) const;
     [[nodiscard]] std::shared_ptr<RequestLifetime>
     acquire_request_lifetime(DeadlinePolicy deadline_policy) const;
+    void maybe_restore_persistent_prefix(std::span<const ninfer::TokenId> tokens) const;
 
     ServeOptions options_;
     std::shared_ptr<spdlog::logger> logger_;
@@ -203,6 +213,9 @@ private:
     std::uint32_t automatic_private_anchors_ = 0;
     ninfer::PromptCapabilities prompt_capabilities_;
     std::shared_ptr<RequestCapacity> request_capacity_;
+    std::unique_ptr<PersistentPromptCache> persistent_cache_;
+    // Serializes catalog file publication with restore selection and Engine slot operations.
+    mutable std::mutex persistent_cache_operation_mutex_;
 };
 
 } // namespace ninfer::serve

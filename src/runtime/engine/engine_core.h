@@ -1249,6 +1249,15 @@ private:
             request->terminal_reason.reset();
 
             finish_engine_phase(boundary, EngineHostPhase::Boundary);
+
+            // GenerationService may persist the completed session as soon as wait() returns.
+            // complete_success() publishes the GenerationResult and wakes that waiter, so make
+            // the newly catalogued continuation (including its rewrite/anchor checkpoints)
+            // visible through slot_states() before notifying the waiter. Otherwise the waiter
+            // can observe the previous published slot snapshot and incorrectly conclude that
+            // the just-completed session is no longer retained.
+            publish_runtime_stats();
+
             complete_success(request, reason);
             remove_completed_slot(lane);
             boundary = begin_host_phase();

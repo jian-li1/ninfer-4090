@@ -28,6 +28,9 @@ struct ServeOptions {
     std::optional<std::string> model_id_override; // unset => artifact identity.model_id
     std::string request_log_jsonl;                // empty => structured request logging disabled
     std::string slot_save_path;        // empty => /slots save/restore/erase disabled
+    // Transparent text-only persistent prefix cache; zero MiB means unlimited.
+    std::string cache_dir;
+    std::uint64_t cache_dir_max_mib = 0;
     std::uint32_t max_context          = 8192;
     KvCapacityPolicy kv_capacity       = KvCapacityPolicy::explicit_capacity(8192);
     std::uint32_t max_concurrency      = 1;

@@ -307,6 +307,14 @@ GCC 13, and CMake 3.28 or newer; the Docker image builds with CUDA 13.1.
   reusable from its endpoint, its rewrite checkpoint, or any retained long anchor; the GDN
   state cannot rewind below the deepest retained checkpoint, and the DFlash backend is not
   supported. Details in [docs/serving.md](docs/serving.md).
+- **Transparent persistent prefix cache.** `--cache-dir DIR` automatically publishes every
+  completed retained text session with its exact rendered-token ledger and restores the longest
+  matching disk prefix after a restart before normal Engine admission. It reuses the native slot
+  snapshot format, so weights, KV layout/dtype, speculative configuration, GDN state, MTP state,
+  checkpoints, and exact prefix identity retain their existing validation. `--cache-dir-max N`
+  applies a snapshot-plus-sidecar LRU limit in MiB (`0` is unlimited). This initial implementation
+  is text-only, write-through, requires `--max-concurrency 1`, and cannot be combined with
+  `--auto-save-evicted`; see [docs/serving.md](docs/serving.md#transparent-persistent-prefix-cache).
 - **Reuse-aware lane choice.** When prefix reuse ties (typically zero for a fresh session),
   admission picks the lane whose occupation costs least to replace - an empty lane before any
   retained session, then the shallowest - so a burst request no longer evicts a deep resident

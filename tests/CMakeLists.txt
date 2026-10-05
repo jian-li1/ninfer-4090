@@ -201,6 +201,9 @@ ninfer_add_test(ninfer_tool_call_parser_test
 ninfer_add_test(ninfer_serve_options_test
   SOURCES test_serve_options.cpp
   LIBRARIES ninfer_serve)
+ninfer_add_test(ninfer_persistent_prompt_cache_test
+  SOURCES test_persistent_prompt_cache.cpp
+  LIBRARIES ninfer_serve)
 ninfer_add_test(ninfer_slot_files_test
   SOURCES test_slot_files.cpp
   LIBRARIES ninfer_serve)

@@ -76,8 +76,15 @@ Gateway 是 CLI、HTTP server 或其他产品入口，拥有：
 - URL、path 和 data acquisition；
 - response schema、usage 和产品侧错误；
 - Gateway 自身的并发与连接生命周期。
+- serving 启动参数配置的持久 snapshot 目录、token sidecar catalog 和 disk LRU。
 
 Gateway 不选择请求顺序、缓存来源、active lane 或 KV page。
+
+`--cache-dir` 是唯一例外中的“候选预置”而不是 admission source selection：serving 在 submit 前只可通过
+公共 slot snapshot API，把 sidecar 证明为 incoming text-token prefix 的 native snapshot 预置到 idle
+retained catalog cell。Sidecar 只作 disk discovery；native snapshot validation 验证完整 continuation，随后
+ResourceManager 仍在 resident candidates 与 root 之间作唯一的实际选择。Serving 不直接导入 State/KV、
+不放宽 exact identity，也不强迫 Engine 采用这个候选。
 
 ### 2.2 Frontend
 

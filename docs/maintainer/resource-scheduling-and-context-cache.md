@@ -38,6 +38,13 @@ Prefix reuse 是 admission 的一种来源选择。它减少重复 prefill，但
 2. 一个 request 发布为 Active 后，其最大合法执行范围已经获得完整资源保证，inactive cache policy
    不能再借用这部分容量。
 
+Serving 的 persistent prompt cache 不是第四种 physical placement。Disk catalog 只用 exact rendered
+text-token ledger 发现一个可能的 native retained-session snapshot，并在 request submit 前通过公共 restore
+API 将它预置为普通 private continuation。Snapshot header/identity 的 native validation 和 Program exact
+prefix verification 仍是 authority；ResourceManager 随后把这个 resident continuation 与其他
+Device/Host candidates 和 root 一起规划。Disk sidecar 命中本身不计 reused tokens，也不绕过
+candidate assessment、reservation 或 resource plan。
+
 ---
 
 ## 2. 决策所有权
