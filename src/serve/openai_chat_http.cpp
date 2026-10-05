@@ -39,12 +39,18 @@ void HttpServer::handle_chat_completions(const httplib::Request& req, httplib::R
     const RequestLogMetadata metadata{.model                  = request.model,
                                       .stream                 = request.stream,
                                       .output_tokens_explicit = request.output_tokens_explicit};
+    // The embedded llama.cpp WebUI expects live prompt-progress telemetry on its streaming chat
+    // request. Keep normal API opt-in semantics when the UI is disabled, but make progress an
+    // invariant for streaming requests while the embedded UI is enabled.
+    const bool return_progress =
+        request.stream && (request.return_progress || options_.enable_ui);
+
     PreparedRequest prepared;
     try {
         const ninfer::GenerationObservationOptions observation{
             .phase_timings   = true,
             .live_timings    = request.stream && request.timings_per_token,
-            .prompt_progress = request.stream && request.return_progress,
+            .prompt_progress = return_progress,
         };
         prepared = service_->prepare(request.generation,
                                      request.stream ? GenerationConsumerMode::Streaming
@@ -106,7 +112,6 @@ void HttpServer::handle_chat_completions(const httplib::Request& req, httplib::R
     }
 
     try {
-        const bool return_progress   = request.return_progress;
         const bool timings_per_token = request.timings_per_token;
         auto stream                  = std::make_shared<HttpGenerationStream>(std::move(prepared));
         auto encoder = std::make_shared<OpenAIChatStream>(identity, request.include_usage,

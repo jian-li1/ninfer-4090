@@ -488,6 +488,7 @@ void HttpServer::register_routes() {
                              {"n_ctx", options_.max_context},
                              {"n_prompt_tokens", state.prompt_tokens},
                              {"n_prompt_tokens_cache", state.cached_tokens},
+                             {"n_prompt_tokens_processed", state.processed_prompt_tokens},
                              {"speculative", speculative}});
         }
         res.set_content(slots.dump(), "application/json");

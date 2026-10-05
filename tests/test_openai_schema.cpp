@@ -750,8 +750,11 @@ int test_stream_observations() {
         check(initial["choices"][0]["delta"].empty() && initial["prompt_progress"]["total"] == 32 &&
                   initial["prompt_progress"]["cache"] == 12 &&
                   initial["prompt_progress"]["processed"] == 12 &&
-                  initial["prompt_progress"]["time_ms"] == 0,
-              "initial prompt progress begins at the admitted cache frontier");
+                  initial["prompt_progress"]["time_ms"] == 0 &&
+                  initial["timings"]["cache_n"] == 12 &&
+                  initial["timings"]["prompt_n"] == 0 &&
+                  initial["timings"]["predicted_n"] == 0,
+              "initial prompt progress begins at the admitted cache frontier with live timings");
 
     const Json middle = parse_sse(stream.prompt_progress(ninfer::PromptProgress{
         .total_prompt_tokens     = 32,
@@ -760,8 +763,12 @@ int test_stream_observations() {
         .elapsed_ns              = 57000000,
     }));
     failures += check(middle["prompt_progress"]["processed"] == 20 &&
-                          middle["prompt_progress"]["time_ms"] == 57,
-                      "prompt progress exposes a cumulative completed frontier");
+                          middle["prompt_progress"]["time_ms"] == 57 &&
+                          middle["timings"]["cache_n"] == 12 &&
+                          middle["timings"]["prompt_n"] == 8 &&
+                          middle["timings"]["predicted_n"] == 0 &&
+                          middle["timings"]["prompt_ms"] == 57.0,
+                      "prompt progress exposes a cumulative frontier and live prefill timings");
     const Json complete = parse_sse(stream.prompt_progress(ninfer::PromptProgress{
         .total_prompt_tokens     = 32,
         .reused_prompt_tokens    = 12,
@@ -769,8 +776,11 @@ int test_stream_observations() {
         .elapsed_ns              = 100000000,
     }));
     failures +=
-        check(complete["prompt_progress"]["processed"] == complete["prompt_progress"]["total"],
-              "final prompt progress reaches the complete prompt");
+        check(complete["prompt_progress"]["processed"] == complete["prompt_progress"]["total"] &&
+                  complete["timings"]["cache_n"] == 12 &&
+                  complete["timings"]["prompt_n"] == 20 &&
+                  complete["timings"]["predicted_n"] == 0,
+              "final prompt progress reaches the complete prompt with final prefill timings");
 
     stream.note_timing(ninfer::GenerationTimingObservation{
         .generated_tokens = 1, .prompt_elapsed_ns = 110000000, .generation_elapsed_ns = 0});
