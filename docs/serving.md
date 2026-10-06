@@ -113,9 +113,11 @@ save. Sessions never saved or restored have no binding and are not spilled; an e
 
 ### Transparent persistent prefix cache
 
-`--cache-dir DIR` enables automatic text-prefix reuse across server restarts. After every
-completed text generation that retained a session, Serve writes the Engine's native snapshot and
-an exact rendered-token sidecar below `DIR/entries`. Before submitting a later text request, it
+`--cache-dir DIR` enables automatic text-prefix reuse across server restarts. After a completed
+text generation that retained a session, Serve writes the Engine's native snapshot and an exact
+rendered-token sidecar below `DIR/entries` unless that reusable prefix is already present. Replaying
+the same prompt therefore refreshes the existing entry's LRU age without writing another snapshot.
+Before submitting a later text request, it
 finds the longest sidecar that is an exact prefix, restores that snapshot into an idle retained
 catalog cell, and then lets the normal Engine planner verify and select among all resident
 candidates. Media prompts do not participate because token IDs alone do not identify their patch
@@ -124,7 +126,8 @@ payloads.
 Native snapshot validation remains authoritative: incompatible weights, KV geometry/dtype,
 speculative settings, corrupt payloads, and sidecar identity mismatches are rejected and removed.
 Snapshot and sidecar publication use temporary files plus rename; startup removes incomplete
-staging/orphan files. `--cache-dir-max N` bounds snapshot plus sidecar storage in MiB with
+staging/orphan files and collapses duplicate reusable-prefix pairs left by older builds.
+`--cache-dir-max N` bounds snapshot plus sidecar storage in MiB with
 least-recently-used eviction; `0` is unlimited. Use a cache directory dedicated to one model and
 runtime configuration even though native validation prevents an incompatible restore.
 
