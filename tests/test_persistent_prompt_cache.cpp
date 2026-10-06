@@ -57,12 +57,33 @@ int main() {
     const std::vector<TokenId> prompt{1, 2, 3, 4, 5, 6};
 
     PersistentPromptCache cache(temp.path, 0);
-    cache.store(short_tokens, "short", [&](const fs::path& path, std::string_view digest) {
-        return fake_save(path, digest, short_tokens);
-    });
-    cache.store(long_tokens, "long", [&](const fs::path& path, std::string_view digest) {
-        return fake_save(path, digest, long_tokens);
-    });
+    const auto short_store =
+        cache.store(short_tokens, "short", [&](const fs::path& path, std::string_view digest) {
+            return fake_save(path, digest, short_tokens);
+        });
+    failures += check(short_store == PersistentPromptCache::StoreDisposition::Stored,
+                      "first persistent prefix was not stored");
+
+    int duplicate_save_calls = 0;
+    const auto duplicate_store = cache.store(
+        short_tokens, "short-duplicate", [&](const fs::path& path, std::string_view digest) {
+            ++duplicate_save_calls;
+            return fake_save(path, digest, short_tokens);
+        });
+    failures += check(duplicate_store == PersistentPromptCache::StoreDisposition::AlreadyPresent,
+                      "exact persistent prefix was not deduplicated");
+    failures += check(duplicate_save_calls == 0,
+                      "duplicate persistent prefix invoked the native snapshot writer");
+    failures += check(!fs::exists(temp.path / "entries" / "short-duplicate.bin") &&
+                          !fs::exists(temp.path / "entries" / "short-duplicate.tok"),
+                      "duplicate persistent prefix created redundant entry files");
+
+    const auto long_store =
+        cache.store(long_tokens, "long", [&](const fs::path& path, std::string_view digest) {
+            return fake_save(path, digest, long_tokens);
+        });
+    failures += check(long_store == PersistentPromptCache::StoreDisposition::Stored,
+                      "distinct persistent prefix was not stored");
 
     const auto match = cache.longest_prefix(prompt);
     failures += check(match && match->digest == "long" && match->tokens == long_tokens.size(),
@@ -75,8 +96,11 @@ int main() {
                       "digest prefix lookup fabricated an absent entry");
 
     // Entries survive catalog reconstruction; incomplete and malformed crash remnants do not.
+    // Startup also collapses duplicate reusable-prefix sidecars left by older builds.
     const fs::path entries = temp.path / "entries";
     {
+        fs::copy_file(entries / "short.bin", entries / "short-copy.bin");
+        fs::copy_file(entries / "short.tok", entries / "short-copy.tok");
         std::ofstream(entries / "orphan.bin") << "orphan";
         std::ofstream(entries / "broken.tok") << "broken";
         std::ofstream(entries / "broken.bin") << "snapshot";
@@ -91,22 +115,30 @@ int main() {
                           !fs::exists(entries / "broken.bin") &&
                           !fs::exists(entries / "stale.tmp.1"),
                       "startup scan retained an incomplete persistent entry");
+    const bool original_short_exists = fs::exists(entries / "short.bin") &&
+                                       fs::exists(entries / "short.tok");
+    const bool copied_short_exists = fs::exists(entries / "short-copy.bin") &&
+                                     fs::exists(entries / "short-copy.tok");
+    failures += check(original_short_exists != copied_short_exists,
+                      "startup scan retained duplicate reusable-prefix entries");
 
     if (rescanned_match) { rescanned.invalidate(*rescanned_match); }
     failures += check(!fs::exists(entries / "long.bin") && !fs::exists(entries / "long.tok"),
                       "cache invalidation did not remove both entry files");
 
     // Each entry is 32 snapshot bytes plus a 20-byte header and its token payload. A 70-byte
-    // limit can retain the newer 3-token entry (64 bytes) but not both entries.
+    // limit can retain the newer 3-token entry (64 bytes) but not both distinct entries.
     TempDirectory lru_temp;
     PersistentPromptCache lru(lru_temp.path, 70);
-    lru.store(short_tokens, "old", [&](const fs::path& path, std::string_view digest) {
+    const std::vector<TokenId> newer_tokens{9, 8, 7};
+    const std::vector<TokenId> newer_prompt{9, 8, 7, 6};
+    (void)lru.store(short_tokens, "old", [&](const fs::path& path, std::string_view digest) {
         return fake_save(path, digest, short_tokens);
     });
-    lru.store(short_tokens, "new", [&](const fs::path& path, std::string_view digest) {
-        return fake_save(path, digest, short_tokens);
+    (void)lru.store(newer_tokens, "new", [&](const fs::path& path, std::string_view digest) {
+        return fake_save(path, digest, newer_tokens);
     });
-    const auto lru_match = lru.longest_prefix(prompt);
+    const auto lru_match = lru.longest_prefix(newer_prompt);
     failures += check(lru_match && lru_match->digest == "new",
                       "persistent cache did not evict the least-recent entry");
     failures += check(!fs::exists(lru_temp.path / "entries" / "old.bin") &&

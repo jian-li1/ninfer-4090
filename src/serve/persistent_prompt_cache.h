@@ -29,6 +29,11 @@ public:
     using SaveSnapshot =
         std::function<SlotSaveResult(const std::filesystem::path&, std::string_view)>;
 
+    enum class StoreDisposition : std::uint8_t {
+        Stored,
+        AlreadyPresent,
+    };
+
     // max_bytes == 0 means unlimited. Entries are private implementation files below
     // directory/entries so a cache root can never collide with manual /slots filenames.
     PersistentPromptCache(std::filesystem::path directory, std::uint64_t max_bytes);
@@ -41,9 +46,11 @@ public:
     prefix_for_digest(std::string_view digest, std::span<const TokenId> prompt) const;
 
     // save_snapshot must atomically publish a native Engine snapshot at the supplied path and
-    // enforce the supplied digest as its retained-session precondition.
-    void store(std::span<const TokenId> ledger, std::string_view expected_digest,
-               const SaveSnapshot& save_snapshot);
+    // enforce the supplied digest as its retained-session precondition. An exact reusable-prefix
+    // duplicate is touched for LRU purposes and returned without invoking save_snapshot.
+    [[nodiscard]] StoreDisposition store(std::span<const TokenId> ledger,
+                                         std::string_view expected_digest,
+                                         const SaveSnapshot& save_snapshot);
 
     void invalidate(const Match& match) noexcept;
 
@@ -69,6 +76,9 @@ private:
 
     [[nodiscard]] static bool is_prefix(std::span<const TokenId> prefix,
                                         std::span<const TokenId> prompt) noexcept;
+    [[nodiscard]] static bool is_exact(std::span<const TokenId> lhs,
+                                       std::span<const TokenId> rhs) noexcept;
+    static void touch_entry(Entry& entry) noexcept;
     [[nodiscard]] static std::string checked_digest_key(std::string_view digest);
     [[nodiscard]] static std::vector<TokenId> read_tokens(const std::filesystem::path& path);
     static void write_tokens_atomic(const std::filesystem::path& path,

@@ -73,6 +73,20 @@ bool PersistentPromptCache::is_prefix(std::span<const TokenId> prefix,
     return prefix.size() <= prompt.size() && std::equal(prefix.begin(), prefix.end(), prompt.begin());
 }
 
+bool PersistentPromptCache::is_exact(std::span<const TokenId> lhs,
+                                     std::span<const TokenId> rhs) noexcept {
+    return lhs.size() == rhs.size() && std::equal(lhs.begin(), lhs.end(), rhs.begin());
+}
+
+void PersistentPromptCache::touch_entry(Entry& entry) noexcept {
+    const auto now = fs::file_time_type::clock::now();
+    entry.last_used = now;
+    std::error_code ignored;
+    fs::last_write_time(entry.snapshot_path, now, ignored);
+    ignored.clear();
+    fs::last_write_time(entry.tokens_path, now, ignored);
+}
+
 std::string PersistentPromptCache::checked_digest_key(std::string_view digest) {
     if (digest.empty()) {
         throw std::invalid_argument("persistent cache session digest is empty");
@@ -224,6 +238,30 @@ void PersistentPromptCache::scan() {
                                     iteration_error.message());
     }
 
+    // Older builds keyed files by the completed-session digest, so replaying the same prompt could
+    // leave several snapshots with an identical reusable-prefix sidecar. Keep the most recently
+    // used copy and reclaim the rest while reconstructing the catalog.
+    std::sort(entries_.begin(), entries_.end(), [](const Entry& lhs, const Entry& rhs) {
+        if (lhs.last_used != rhs.last_used) { return lhs.last_used > rhs.last_used; }
+        return lhs.digest < rhs.digest;
+    });
+    std::vector<Entry> unique_entries;
+    unique_entries.reserve(entries_.size());
+    for (Entry& entry : entries_) {
+        const bool duplicate = std::any_of(
+            unique_entries.begin(), unique_entries.end(),
+            [&](const Entry& existing) { return is_exact(existing.tokens, entry.tokens); });
+        if (duplicate) {
+            std::error_code ignored;
+            fs::remove(entry.snapshot_path, ignored);
+            ignored.clear();
+            fs::remove(entry.tokens_path, ignored);
+            continue;
+        }
+        unique_entries.push_back(std::move(entry));
+    }
+    entries_ = std::move(unique_entries);
+
     // A crash between native snapshot publication and sidecar publication leaves an orphaned
     // .bin. It cannot be matched safely, so reclaim it during startup.
     iteration_error.clear();
@@ -255,12 +293,7 @@ PersistentPromptCache::longest_prefix(std::span<const TokenId> prompt) {
         }
     }
     if (best == nullptr) { return std::nullopt; }
-    const auto now = fs::file_time_type::clock::now();
-    best->last_used = now;
-    std::error_code ignored;
-    fs::last_write_time(best->snapshot_path, now, ignored);
-    ignored.clear();
-    fs::last_write_time(best->tokens_path, now, ignored);
+    touch_entry(*best);
     return Match{.snapshot_path = best->snapshot_path,
                  .digest        = best->digest,
                  .tokens        = static_cast<std::uint32_t>(best->tokens.size())};
@@ -277,14 +310,31 @@ PersistentPromptCache::prefix_for_digest(std::string_view digest,
     return is_prefix(found->tokens, prompt) ? found->tokens.size() : std::size_t{0};
 }
 
-void PersistentPromptCache::store(std::span<const TokenId> ledger,
-                                  std::string_view expected_digest,
-                                  const SaveSnapshot& save_snapshot) {
-    if (ledger.empty() || expected_digest.empty()) { return; }
+PersistentPromptCache::StoreDisposition
+PersistentPromptCache::store(std::span<const TokenId> ledger, std::string_view expected_digest,
+                             const SaveSnapshot& save_snapshot) {
+    if (ledger.empty() || expected_digest.empty()) { return StoreDisposition::AlreadyPresent; }
     if (!save_snapshot) {
         throw std::invalid_argument("persistent cache snapshot writer is empty");
     }
-    const std::string digest  = checked_digest_key(expected_digest);
+    const std::string digest = checked_digest_key(expected_digest);
+
+    // The reusable prefix, not the completed-session digest, is the disk-cache identity. The same
+    // prompt can legitimately produce a different assistant response and therefore a different
+    // completed-session digest on every replay. If its exact pre-response token ledger is already
+    // indexed, another native snapshot would be redundant and can be skipped before any GPU copy
+    // or disk write occurs.
+    {
+        std::lock_guard lock(mutex_);
+        const auto existing = std::find_if(entries_.begin(), entries_.end(), [&](const Entry& entry) {
+            return is_exact(entry.tokens, ledger);
+        });
+        if (existing != entries_.end()) {
+            touch_entry(*existing);
+            return StoreDisposition::AlreadyPresent;
+        }
+    }
+
     const fs::path snapshot   = entries_directory_ / (digest + ".bin");
     const fs::path token_file = entries_directory_ / (digest + ".tok");
     const SlotSaveResult saved = save_snapshot(snapshot, digest);
@@ -317,9 +367,25 @@ void PersistentPromptCache::store(std::span<const TokenId> ledger,
     if (time_error) { entry.last_used = fs::file_time_type::clock::now(); }
 
     std::lock_guard lock(mutex_);
+    // GenerationService serializes persistent-cache operations, but keep the cache class safe if a
+    // second writer races this one directly. If another writer published the same reusable prefix
+    // while this snapshot was being written, discard this redundant pair and retain the first.
+    const auto duplicate = std::find_if(entries_.begin(), entries_.end(), [&](const Entry& existing) {
+        return existing.digest != digest && is_exact(existing.tokens, ledger);
+    });
+    if (duplicate != entries_.end()) {
+        std::error_code ignored;
+        fs::remove(snapshot, ignored);
+        ignored.clear();
+        fs::remove(token_file, ignored);
+        touch_entry(*duplicate);
+        return StoreDisposition::AlreadyPresent;
+    }
+
     std::erase_if(entries_, [&](const Entry& existing) { return existing.digest == digest; });
     entries_.push_back(std::move(entry));
     prune_locked();
+    return StoreDisposition::Stored;
 }
 
 void PersistentPromptCache::invalidate(const Match& match) noexcept {

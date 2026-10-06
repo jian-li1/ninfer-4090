@@ -612,17 +612,25 @@ GenerationOutcome GenerationService::run(PreparedRequest& prepared, const Stream
             if (checkpoint != nullptr) {
                 const std::span<const ninfer::TokenId> reusable_prefix(
                     prepared.persistent_cache_prompt_tokens.data(), checkpoint->frontier);
-                persistent_cache_->store(
-                    reusable_prefix, result.session_digest,
-                    [&](const std::filesystem::path& path, std::string_view digest) {
-                        return engine_->save_slot(slot, path.string(), std::string(digest));
-                    });
+                const PersistentPromptCache::StoreDisposition disposition =
+                    persistent_cache_->store(
+                        reusable_prefix, result.session_digest,
+                        [&](const std::filesystem::path& path, std::string_view digest) {
+                            return engine_->save_slot(slot, path.string(), std::string(digest));
+                        });
                 if (logger_) {
-                    logger_->info("{}", "persistent KV cache saved slot=" +
-                                           std::to_string(result.slot) + " reusable_tokens=" +
-                                           std::to_string(checkpoint->frontier) +
-                                           " retained_tokens=" +
-                                           std::to_string(state.cached_tokens));
+                    if (disposition == PersistentPromptCache::StoreDisposition::Stored) {
+                        logger_->info("{}", "persistent KV cache saved slot=" +
+                                               std::to_string(result.slot) + " reusable_tokens=" +
+                                               std::to_string(checkpoint->frontier) +
+                                               " retained_tokens=" +
+                                               std::to_string(state.cached_tokens));
+                    } else {
+                        logger_->info(
+                            "{}", "persistent KV cache skipped duplicate save slot=" +
+                                      std::to_string(result.slot) + " reusable_tokens=" +
+                                      std::to_string(checkpoint->frontier));
+                    }
                 }
             } else if (logger_) {
                 logger_->debug(
