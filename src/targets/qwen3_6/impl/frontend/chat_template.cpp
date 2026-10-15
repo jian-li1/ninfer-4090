@@ -414,7 +414,7 @@ RenderedFragment ChatMessage::rendered_content(bool add_vision_id, int* image_co
 CompiledChatTemplate CompiledChatTemplate::resolve(std::string_view source) {
     const Sha256Digest digest = sha256(source);
     if (digest == kThinkingToggleTemplateDigest) {
-        return CompiledChatTemplate(ChatTemplateSemantics::ThinkingToggle);
+        return CompiledChatTemplate(ChatTemplateSemantics::ReasoningEffort);
     }
     if (digest == kReasoningEffortTemplateDigest) {
         return CompiledChatTemplate(ChatTemplateSemantics::ReasoningEffort);
