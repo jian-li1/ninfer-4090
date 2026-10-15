@@ -394,6 +394,66 @@ public:
             }
         }
 
+        // A rewrite checkpoint at exactly its reusable frontier can have a different shortlist
+        // digest from the next request even when the model-visible prefix is identical. The
+        // shortlist intentionally includes execution-decomposition markers, while a terminal
+        // marker at the old request boundary disappears once that response becomes history.
+        //
+        // The shortlist is only an optimization: Program::inspect_admission performs the exact
+        // token/position/media/runtime verification. Probe rewrite checkpoints that the shortlist
+        // did not admit so persisted pre-response checkpoints remain reusable after restart.
+        if (cache_enabled_) {
+            for (std::uint32_t slot = 0; slot < catalog_count_; ++slot) {
+                const CatalogEntry& entry = catalog_[slot];
+                if (entry.state != CatalogState::Catalogued || !entry.handle ||
+                    private_has_active_edge(slot) || !entry.summary.rewrite) {
+                    continue;
+                }
+                const auto& rewrite = *entry.summary.rewrite;
+                const bool already_considered = std::any_of(
+                    candidates.begin(), candidates.end(), [&](const Candidate& candidate) {
+                        return candidate.private_source &&
+                               candidate.private_source->slot == slot &&
+                               candidate.selected_observation &&
+                               candidate.selected_observation->checkpoint == rewrite.ref;
+                    });
+                if (already_considered) { continue; }
+
+                const bool retain =
+                    entry.session && (!base.context_cache().session_key ||
+                                      *entry.session != *base.context_cache().session_key ||
+                                      !base.context_cache().update_session_index);
+                std::optional<AdmissionCandidate> plan = program.inspect_admission(
+                    prompt, base, *destination, &*entry.handle, nullptr, rewrite.ref, retain);
+                if (!plan) { continue; }
+                if (plan->summary().reusable_prompt_tokens == 0 ||
+                    (retain &&
+                     plan->identity_assessment().source_mode != PrivateSourceMode::Retain)) {
+                    throw std::logic_error(
+                        "Program returned an invalid rewrite fallback candidate");
+                }
+                const bool current_session_binding =
+                    current_session_cell && session_index_[*current_session_cell].slot == slot &&
+                    session_index_[*current_session_cell].owner_id == entry.id &&
+                    session_index_[*current_session_cell].revision == entry.revision;
+                append_unique(provisional_demand.exact_resident_keys, rewrite.shortlist_key);
+                candidates.push_back(Candidate{
+                    .plan                    = std::move(*plan),
+                    .current_session_binding = current_session_binding,
+                    .private_source          = private_capability(slot),
+                    .selected_observation =
+                        PolicyObservationKey{
+                            .shared     = false,
+                            .slot       = slot,
+                            .owner_id   = entry.id,
+                            .revision   = entry.revision,
+                            .checkpoint = rewrite.ref,
+                        },
+                    .source_key = rewrite.shortlist_key,
+                });
+            }
+        }
+
         std::optional<Choice> selected =
             plan_materialization(program, prompt, base, *destination, candidates, publication_order,
                                  planning_started, provisional_demand, allowance);

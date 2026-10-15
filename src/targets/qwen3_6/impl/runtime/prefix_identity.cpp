@@ -277,10 +277,16 @@ bool ResidentPrefixIdentity::matches(const PreparedPromptData& prompt, std::size
     for (std::size_t i = 0; i < incoming_items; ++i) {
         if (!same_item(prompt.vision_items[i], vision_items_[i])) { return false; }
     }
+    // A rewrite boundary exactly at the reuse frontier describes how execution continues
+    // *after* this prefix; it does not change the state produced by the first `count` tokens.
+    // Exclude that terminal boundary while still requiring every boundary strictly inside the
+    // reused prefix to agree. This matters for a persisted pre-response checkpoint: when the
+    // next request appends the completed assistant turn, the same token prefix no longer carries
+    // the old request's terminal rewrite marker.
     const auto incoming_end =
-        std::upper_bound(prompt.identity.rewrite_execution_frontiers.begin(),
+        std::lower_bound(prompt.identity.rewrite_execution_frontiers.begin(),
                          prompt.identity.rewrite_execution_frontiers.end(), count);
-    const auto resident_end = std::upper_bound(rewrite_execution_frontiers_.begin(),
+    const auto resident_end = std::lower_bound(rewrite_execution_frontiers_.begin(),
                                                rewrite_execution_frontiers_.end(), count);
     return std::distance(prompt.identity.rewrite_execution_frontiers.begin(), incoming_end) ==
                std::distance(rewrite_execution_frontiers_.begin(), resident_end) &&
@@ -315,9 +321,9 @@ bool ResidentPrefixIdentity::prefix_equals(const ResidentPrefixIdentity& other,
     for (std::size_t index = 0; index < left_items; ++index) {
         if (!same_item(vision_items_[index], other.vision_items_[index])) { return false; }
     }
-    const auto left_end  = std::upper_bound(rewrite_execution_frontiers_.begin(),
+    const auto left_end  = std::lower_bound(rewrite_execution_frontiers_.begin(),
                                             rewrite_execution_frontiers_.end(), count);
-    const auto right_end = std::upper_bound(other.rewrite_execution_frontiers_.begin(),
+    const auto right_end = std::lower_bound(other.rewrite_execution_frontiers_.begin(),
                                             other.rewrite_execution_frontiers_.end(), count);
     return std::distance(rewrite_execution_frontiers_.begin(), left_end) ==
                std::distance(other.rewrite_execution_frontiers_.begin(), right_end) &&

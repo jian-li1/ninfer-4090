@@ -328,6 +328,9 @@ void test_prefix_identity() {
     expect(!q36::detail::prefix_matches(changed_decomposition, ledger, resident,
                                         changed_decomposition.token_ids.size()),
            "different GDN execution decomposition must not reuse resident state");
+    changed_decomposition.identity.rewrite_execution_frontiers = {3};
+    expect(q36::detail::prefix_matches(changed_decomposition, ledger, resident, 3),
+           "execution boundary exactly at reuse frontier changed prefix identity");
     changed_decomposition.identity.rewrite_execution_frontiers = {4};
     expect(q36::detail::prefix_matches(changed_decomposition, ledger, resident, 3),
            "execution decomposition wholly after the frontier changed prefix identity");
