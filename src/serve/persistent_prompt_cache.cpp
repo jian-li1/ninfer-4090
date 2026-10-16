@@ -319,21 +319,11 @@ PersistentPromptCache::store(std::span<const TokenId> ledger, std::string_view e
     }
     const std::string digest = checked_digest_key(expected_digest);
 
-    // The reusable prefix, not the completed-session digest, is the disk-cache identity. The same
-    // prompt can legitimately produce a different assistant response and therefore a different
-    // completed-session digest on every replay. If its exact pre-response token ledger is already
-    // indexed, another native snapshot would be redundant and can be skipped before any GPU copy
-    // or disk write occurs.
-    {
-        std::lock_guard lock(mutex_);
-        const auto existing = std::find_if(entries_.begin(), entries_.end(), [&](const Entry& entry) {
-            return is_exact(entry.tokens, ledger);
-        });
-        if (existing != entries_.end()) {
-            touch_entry(*existing);
-            return StoreDisposition::AlreadyPresent;
-        }
-    }
+    // The reusable token ledger is the lookup identity, but the native snapshot is not implied by
+    // that ledger. A newer execution of the same prefix can carry different resident checkpoint
+    // topology, so always publish the fresh snapshot and replace older entries for this prefix.
+    // This is especially important after a request was materialized from a different cache source:
+    // keeping the first snapshot forever can resurrect stale long-anchor topology after restart.
 
     const fs::path snapshot   = entries_directory_ / (digest + ".bin");
     const fs::path token_file = entries_directory_ / (digest + ".tok");
@@ -367,22 +357,20 @@ PersistentPromptCache::store(std::span<const TokenId> ledger, std::string_view e
     if (time_error) { entry.last_used = fs::file_time_type::clock::now(); }
 
     std::lock_guard lock(mutex_);
-    // GenerationService serializes persistent-cache operations, but keep the cache class safe if a
-    // second writer races this one directly. If another writer published the same reusable prefix
-    // while this snapshot was being written, discard this redundant pair and retain the first.
-    const auto duplicate = std::find_if(entries_.begin(), entries_.end(), [&](const Entry& existing) {
-        return existing.digest != digest && is_exact(existing.tokens, ledger);
-    });
-    if (duplicate != entries_.end()) {
+    // GenerationService serializes persistent-cache operations, but keep replacement atomic at the
+    // catalog level as well. Once the fresh pair is fully published, reclaim every older snapshot
+    // with the same reusable prefix. Entries with the same digest name the files just written and
+    // are removed from the in-memory catalog only; deleting their paths would delete the new pair.
+    for (const Entry& existing : entries_) {
+        if (existing.digest == digest || !is_exact(existing.tokens, ledger)) { continue; }
         std::error_code ignored;
-        fs::remove(snapshot, ignored);
+        fs::remove(existing.snapshot_path, ignored);
         ignored.clear();
-        fs::remove(token_file, ignored);
-        touch_entry(*duplicate);
-        return StoreDisposition::AlreadyPresent;
+        fs::remove(existing.tokens_path, ignored);
     }
-
-    std::erase_if(entries_, [&](const Entry& existing) { return existing.digest == digest; });
+    std::erase_if(entries_, [&](const Entry& existing) {
+        return existing.digest == digest || is_exact(existing.tokens, ledger);
+    });
     entries_.push_back(std::move(entry));
     prune_locked();
     return StoreDisposition::Stored;

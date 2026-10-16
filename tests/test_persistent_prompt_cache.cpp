@@ -70,13 +70,18 @@ int main() {
             ++duplicate_save_calls;
             return fake_save(path, digest, short_tokens);
         });
-    failures += check(duplicate_store == PersistentPromptCache::StoreDisposition::AlreadyPresent,
-                      "exact persistent prefix was not deduplicated");
-    failures += check(duplicate_save_calls == 0,
-                      "duplicate persistent prefix invoked the native snapshot writer");
-    failures += check(!fs::exists(temp.path / "entries" / "short-duplicate.bin") &&
-                          !fs::exists(temp.path / "entries" / "short-duplicate.tok"),
-                      "duplicate persistent prefix created redundant entry files");
+    failures += check(duplicate_store == PersistentPromptCache::StoreDisposition::Stored,
+                      "fresh snapshot for an existing persistent prefix was not stored");
+    failures += check(duplicate_save_calls == 1,
+                      "existing persistent prefix did not invoke the fresh snapshot writer");
+    failures += check(!fs::exists(temp.path / "entries" / "short.bin") &&
+                          !fs::exists(temp.path / "entries" / "short.tok") &&
+                          fs::exists(temp.path / "entries" / "short-duplicate.bin") &&
+                          fs::exists(temp.path / "entries" / "short-duplicate.tok"),
+                      "fresh persistent snapshot did not replace the older prefix entry");
+    const auto replaced_match = cache.longest_prefix(std::vector<TokenId>{1, 2, 3, 9});
+    failures += check(replaced_match && replaced_match->digest == "short-duplicate",
+                      "persistent prefix lookup did not select the replacement snapshot");
 
     const auto long_store =
         cache.store(long_tokens, "long", [&](const fs::path& path, std::string_view digest) {
@@ -99,8 +104,8 @@ int main() {
     // Startup also collapses duplicate reusable-prefix sidecars left by older builds.
     const fs::path entries = temp.path / "entries";
     {
-        fs::copy_file(entries / "short.bin", entries / "short-copy.bin");
-        fs::copy_file(entries / "short.tok", entries / "short-copy.tok");
+        fs::copy_file(entries / "short-duplicate.bin", entries / "short-copy.bin");
+        fs::copy_file(entries / "short-duplicate.tok", entries / "short-copy.tok");
         std::ofstream(entries / "orphan.bin") << "orphan";
         std::ofstream(entries / "broken.tok") << "broken";
         std::ofstream(entries / "broken.bin") << "snapshot";
@@ -115,8 +120,8 @@ int main() {
                           !fs::exists(entries / "broken.bin") &&
                           !fs::exists(entries / "stale.tmp.1"),
                       "startup scan retained an incomplete persistent entry");
-    const bool original_short_exists = fs::exists(entries / "short.bin") &&
-                                       fs::exists(entries / "short.tok");
+    const bool original_short_exists = fs::exists(entries / "short-duplicate.bin") &&
+                                       fs::exists(entries / "short-duplicate.tok");
     const bool copied_short_exists = fs::exists(entries / "short-copy.bin") &&
                                      fs::exists(entries / "short-copy.tok");
     failures += check(original_short_exists != copied_short_exists,

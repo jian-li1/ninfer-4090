@@ -46,8 +46,9 @@ public:
     prefix_for_digest(std::string_view digest, std::span<const TokenId> prompt) const;
 
     // save_snapshot must atomically publish a native Engine snapshot at the supplied path and
-    // enforce the supplied digest as its retained-session precondition. An exact reusable-prefix
-    // duplicate is touched for LRU purposes and returned without invoking save_snapshot.
+    // enforce the supplied digest as its retained-session precondition. A newly saved snapshot
+    // replaces older entries with the same reusable token prefix because equal token ledgers do
+    // not guarantee equivalent resident checkpoint topology.
     [[nodiscard]] StoreDisposition store(std::span<const TokenId> ledger,
                                          std::string_view expected_digest,
                                          const SaveSnapshot& save_snapshot);
