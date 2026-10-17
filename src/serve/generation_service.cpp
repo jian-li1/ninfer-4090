@@ -604,7 +604,15 @@ GenerationOutcome GenerationService::run(PreparedRequest& prepared, const Stream
             const ninfer::SlotCheckpoint* checkpoint = nullptr;
             for (const ninfer::SlotCheckpoint& candidate : state.checkpoints) {
                 if (candidate.frontier == 0 || candidate.frontier > prompt_tokens) { continue; }
-                if (checkpoint == nullptr || candidate.frontier > checkpoint->frontier) {
+                // Persist the newest rewrite checkpoint in preference to a later long anchor.
+                // The disk sidecar identifies the continuation point that should be replayed after
+                // restart.  Long anchors are useful in the live planner, but restoring a snapshot
+                // indexed by one can route cold-start reuse through retained-source pressure
+                // materialization and intermittently fall back to root.
+                if (checkpoint == nullptr ||
+                    (candidate.rewrite && !checkpoint->rewrite) ||
+                    (candidate.rewrite == checkpoint->rewrite &&
+                     candidate.frontier > checkpoint->frontier)) {
                     checkpoint = &candidate;
                 }
             }
@@ -623,6 +631,8 @@ GenerationOutcome GenerationService::run(PreparedRequest& prepared, const Stream
                         logger_->info("{}", "persistent KV cache saved slot=" +
                                                std::to_string(result.slot) + " reusable_tokens=" +
                                                std::to_string(checkpoint->frontier) +
+                                               " checkpoint=" +
+                                               (checkpoint->rewrite ? "rewrite" : "fallback") +
                                                " retained_tokens=" +
                                                std::to_string(state.cached_tokens));
                     } else {

@@ -7793,7 +7793,8 @@ ProgramImplCore::checkpoint_recovery_work(const SharedPrefixHandle& owner,
 
 std::unique_ptr<CapturePressureCandidateImpl>
 ProgramImplCore::make_capture_physical_candidate(const CaptureAssessment& assessment) const {
-    if (assessment.implementation == nullptr || !assessment.publishes_shared ||
+    if (assessment.implementation == nullptr ||
+        (!assessment.publishes_private && !assessment.publishes_shared) ||
         assessment.frontier == 0) {
         throw std::invalid_argument("capture pressure candidate is incomplete");
     }

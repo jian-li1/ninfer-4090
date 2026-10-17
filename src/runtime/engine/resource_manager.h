@@ -608,8 +608,8 @@ public:
                 }
             }
         }
-        if (exact_shared != nullptr) {
-            if (!private_baseline.publishes_private || !private_baseline.physically_feasible) {
+        if (exact_shared != nullptr && private_baseline.physically_feasible) {
+            if (!private_baseline.publishes_private) {
                 program.skip_capture(std::move(offer));
                 return ActiveCaptureReserveResult::Skipped;
             }
@@ -642,8 +642,11 @@ public:
 
         std::optional<SelectedCapture> selected;
         std::vector<PlanningOwnerRecord> capture_owner_records;
-        if (candidate.publishes_shared) {
+        const bool private_pressure =
+            private_baseline.publishes_private && !private_baseline.physically_feasible;
+        if (candidate.publishes_shared || private_pressure) {
             const bool pressure_evidence =
+                private_pressure ||
                 has_shared_candidate_evidence(candidate.shared_evidence,
                                               SharedCandidateEvidence::ExplicitBoundary) ||
                 has_shared_candidate_evidence(candidate.shared_evidence,
@@ -651,17 +654,31 @@ public:
                 matching_reuse_domains(candidate.shortlist_key) >= 2U;
 
             std::vector<CaptureScenario> scenarios;
-            scenarios.reserve(static_cast<std::size_t>(shared_catalog_count_) + 1U);
-            for (std::uint32_t slot = 0; slot < shared_catalog_count_; ++slot) {
-                if (shared_catalog_[slot].state != SharedCatalogState::Vacant) { continue; }
+            scenarios.reserve(static_cast<std::size_t>(shared_catalog_count_) + 2U);
+            // Private rewrite/turn captures used to be dropped immediately when their state
+            // image was not physically feasible at the capture instant.  Give that private-only
+            // capture the same bounded pressure-planning opportunity as shared publication.
+            // This is important for a newly started conversation while another private
+            // continuation is resident: preserving the rewrite checkpoint is what makes the
+            // continuation safely replayable after a persistent-cache restore.
+            if (private_pressure && (!candidate.publishes_shared || exact_shared != nullptr)) {
                 scenarios.push_back(CaptureScenario{
-                    .assessment       = candidate,
-                    .publication_slot = slot,
-                    .stable_ordinal   = 0,
+                    .assessment     = private_baseline,
+                    .stable_ordinal = 0,
                 });
-                break;
             }
-            if (pressure_evidence) {
+            if (candidate.publishes_shared && exact_shared == nullptr) {
+                for (std::uint32_t slot = 0; slot < shared_catalog_count_; ++slot) {
+                    if (shared_catalog_[slot].state != SharedCatalogState::Vacant) { continue; }
+                    scenarios.push_back(CaptureScenario{
+                        .assessment       = candidate,
+                        .publication_slot = slot,
+                        .stable_ordinal   = 1,
+                    });
+                    break;
+                }
+            }
+            if (pressure_evidence && candidate.publishes_shared) {
                 for (std::uint32_t slot = 0; slot < shared_catalog_count_; ++slot) {
                     SharedCatalogEntry& entry = shared_catalog_[slot];
                     if (entry.state != SharedCatalogState::Catalogued || !entry.handle ||
@@ -677,7 +694,7 @@ public:
                         .replacement          = &*entry.handle,
                         .replacement_id       = entry.id,
                         .replacement_revision = entry.revision,
-                        .stable_ordinal       = 1U + slot,
+                        .stable_ordinal       = 2U + slot,
                     });
                 }
             }
@@ -842,6 +859,8 @@ public:
                     .blocked_runnable_requests = blocked_runnable_requests,
                     .stable_scenario_ordinal   = scenario.stable_ordinal,
                     .target_budget             = scenario_budget,
+                    .required_private_capture  =
+                        private_pressure && !scenario.assessment.publishes_shared,
                 };
                 std::optional<typename CapturePlanner::Result> planned =
                     capture_planner_.plan(program, cost_model_, input);
@@ -882,7 +901,7 @@ public:
         ActiveCaptureRecord record{
             .lane                 = lane,
             .publishes_private    = selected->scenario.assessment.publishes_private,
-            .publishes_shared     = true,
+            .publishes_shared     = selected->scenario.assessment.publishes_shared,
             .publication_slot     = selected->scenario.publication_slot,
             .replacement_id       = selected->scenario.replacement_id,
             .replacement_revision = selected->scenario.replacement_revision,
@@ -950,22 +969,26 @@ public:
         if (!selected->plan.pressure) {
             throw std::logic_error("selected shared capture has no pressure plan");
         }
-        if (record.publication_slot >= shared_catalog_count_) {
-            throw std::logic_error("selected shared publication slot is invalid");
-        }
-        const SharedCatalogEntry& publication = shared_catalog_[record.publication_slot];
-        if (record.replacement_id == 0) {
-            if (publication.state != SharedCatalogState::Vacant || publication.id != 0 ||
-                publication.handle || publication.transaction_pins != 0 ||
-                shared_active_edge_count(record.publication_slot) != 0) {
-                throw std::logic_error("selected vacant shared publication slot changed");
+        if (record.publishes_shared) {
+            if (record.publication_slot >= shared_catalog_count_) {
+                throw std::logic_error("selected shared publication slot is invalid");
             }
-        } else if (publication.state != SharedCatalogState::Catalogued || !publication.handle ||
-                   publication.id != record.replacement_id ||
-                   publication.revision != record.replacement_revision ||
-                   publication.transaction_pins != 0 ||
-                   shared_active_edge_count(record.publication_slot) != 0) {
-            throw std::logic_error("selected shared replacement changed before reservation");
+            const SharedCatalogEntry& publication = shared_catalog_[record.publication_slot];
+            if (record.replacement_id == 0) {
+                if (publication.state != SharedCatalogState::Vacant || publication.id != 0 ||
+                    publication.handle || publication.transaction_pins != 0 ||
+                    shared_active_edge_count(record.publication_slot) != 0) {
+                    throw std::logic_error("selected vacant shared publication slot changed");
+                }
+            } else if (publication.state != SharedCatalogState::Catalogued ||
+                       !publication.handle || publication.id != record.replacement_id ||
+                       publication.revision != record.replacement_revision ||
+                       publication.transaction_pins != 0 ||
+                       shared_active_edge_count(record.publication_slot) != 0) {
+                throw std::logic_error("selected shared replacement changed before reservation");
+            }
+        } else if (record.publication_slot != kInvalidCatalogSlot || record.replacement_id != 0) {
+            throw std::logic_error("selected private capture has shared publication state");
         }
 
         // Fork-local, and order-critical: see the materialization path above.
@@ -975,8 +998,9 @@ public:
         reserve_logical_active_capture(open);
         const ContextTransactionReserveStatus reserved =
             program.reserve_active_capture_with_pressure(
-                std::move(offer), nullptr, selected->scenario.replacement, private_replacement,
-                true, std::move(*selected->plan.pressure), cancellation);
+                std::move(offer), open.publishes_shared ? nullptr : exact_shared,
+                selected->scenario.replacement, private_replacement, open.publishes_shared,
+                std::move(*selected->plan.pressure), cancellation);
         if (reserved == ContextTransactionReserveStatus::Aborted) {
             rollback_logical_active_capture(open);
             transaction_.template emplace<std::monostate>();
@@ -2490,7 +2514,9 @@ private:
         for (const OwnerClaim& claim : record.shared_claims) {
             shared_catalog_[claim.capability.slot].state = SharedCatalogState::Claimed;
         }
-        shared_catalog_[record.publication_slot].state = SharedCatalogState::ReservedCapture;
+        if (record.publishes_shared) {
+            shared_catalog_[record.publication_slot].state = SharedCatalogState::ReservedCapture;
+        }
     }
 
     void rollback_logical_active_capture(const ActiveCaptureRecord& record) noexcept {
@@ -2500,9 +2526,11 @@ private:
         for (const OwnerClaim& claim : record.shared_claims) {
             shared_catalog_[claim.capability.slot].state = SharedCatalogState::Catalogued;
         }
-        shared_catalog_[record.publication_slot].state = record.replacement_id == 0
-                                                             ? SharedCatalogState::Vacant
-                                                             : SharedCatalogState::Catalogued;
+        if (record.publishes_shared) {
+            shared_catalog_[record.publication_slot].state =
+                record.replacement_id == 0 ? SharedCatalogState::Vacant
+                                           : SharedCatalogState::Catalogued;
+        }
     }
 
     void observe_selected_hit(const MaterializationRecord& record) noexcept {

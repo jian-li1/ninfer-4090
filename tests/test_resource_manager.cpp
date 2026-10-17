@@ -2872,6 +2872,40 @@ void test_in_progress_adoption_and_private_capture() {
     (void)finish_active(manager, program, active, 24);
 }
 
+void test_private_capture_uses_pressure_instead_of_skipping() {
+    FakeManager manager = make_manager(1, 2);
+    FakeProgram program;
+
+    const ActiveRequest resident = start_active(manager, program, 71, make_base(71), 1);
+    (void)finish_active(manager, program, resident, 32);
+    const ActiveRequest active = start_active(manager, program, 72, make_base(72), 2);
+
+    program.required_pressure_actions    = 1;
+    program.pressure_action_immediate_ns = 0;
+    program.capture_assessment           = FakeCaptureAssessment{
+        .shortlist_key          = FakeShortlistKey{.digest = 72, .frontier = 64},
+        .protected_rebuild_work = PrefillWork{.tokens = 64},
+        .publishes_private      = true,
+        .physically_feasible    = false,
+    };
+    program.capture_summary.rewrite = rewrite_checkpoint(72, 64);
+
+    const auto reserved =
+        manager.reserve_active_capture(program, active.lane, FakeCaptureOffer{.id = 2}, 0, {});
+    require(reserved == FakeManager::ActiveCaptureReserveResult::Reserved,
+            "private capture under pressure was skipped");
+    auto progress      = manager.progress_context_transaction(program, {});
+    const auto outcome = std::get<FakeManager::ActiveCaptureOutcome>(std::move(progress));
+    require(outcome.status == ContextTransactionStatus::Published,
+            "private capture pressure transaction did not publish");
+    require(!program.started_action_ids.empty(),
+            "private capture did not execute the selected pressure action");
+    require(program.skipped_captures == 0,
+            "private capture pressure path called skip_capture");
+    program.required_pressure_actions = 0;
+    (void)finish_active(manager, program, active, 64);
+}
+
 void test_projected_nested_shared_candidates_use_marginal_value() {
     FakeManager manager = make_manager(1, 2, 2);
     FakeProgram program;
@@ -3503,6 +3537,7 @@ int main() {
     run_test("combined target exact repricing",
              test_combined_target_reprices_cancelled_pressure_copy);
     run_test("in-progress and capture", test_in_progress_adoption_and_private_capture);
+    run_test("private capture pressure", test_private_capture_uses_pressure_instead_of_skipping);
     run_test("projected shared marginal value",
              test_projected_nested_shared_candidates_use_marginal_value);
     run_test("observed shared independent domains",

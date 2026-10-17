@@ -1086,6 +1086,10 @@ struct SlotRestoreResult {
 struct SlotCheckpoint {
     std::uint32_t frontier = 0;
     std::string session_digest;
+    // True when this frontier is backed by the continuation's dedicated rewrite StateImage.
+    // Rewrite checkpoints are the durable continuation points intended for response replay;
+    // long anchors are planner hints whose retained-source materialization may require pressure.
+    bool rewrite = false;
 };
 
 // One Engine lane's occupancy for /slots-style reporting: an active request's prompt size, or

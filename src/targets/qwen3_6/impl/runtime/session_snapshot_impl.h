@@ -336,25 +336,45 @@ ProgramImplCore::continuation_checkpoints(const ContinuationHandle& continuation
     const SequenceState& sequence = continuation_states[ContractAccess::index(continuation)];
     const std::uint32_t depth     = static_cast<std::uint32_t>(sequence.ledger.size());
 
-    std::vector<std::uint32_t> frontiers;
+    // Preserve checkpoint provenance for persistence.  A long anchor and a rewrite checkpoint can
+    // name the same (or nearby) ledger frontier, but they are not interchangeable after restore:
+    // the rewrite StateImage is the continuation point designed for response replay, while a long
+    // anchor is a retained planner checkpoint.
+    struct CheckpointFrontier {
+        std::uint32_t frontier = 0;
+        bool rewrite = false;
+    };
+    std::vector<CheckpointFrontier> frontiers;
     frontiers.reserve(sequence.long_anchors.size() + 2U);
     for (const LongAnchorCheckpoint& anchor : sequence.long_anchors) {
-        frontiers.push_back(anchor.frontier);
+        frontiers.push_back({.frontier = anchor.frontier, .rewrite = false});
     }
     if (sequence.rewrite_checkpoint.valid) {
-        frontiers.push_back(sequence.rewrite_checkpoint.frontier);
+        frontiers.push_back({.frontier = sequence.rewrite_checkpoint.frontier, .rewrite = true});
     }
-    if (sequence.endpoint_valid) { frontiers.push_back(sequence.ledger_frontier); }
-    std::sort(frontiers.begin(), frontiers.end());
-    frontiers.erase(std::unique(frontiers.begin(), frontiers.end()), frontiers.end());
+    if (sequence.endpoint_valid) {
+        frontiers.push_back({.frontier = sequence.ledger_frontier, .rewrite = false});
+    }
+    std::sort(frontiers.begin(), frontiers.end(), [](const auto& lhs, const auto& rhs) {
+        if (lhs.frontier != rhs.frontier) { return lhs.frontier < rhs.frontier; }
+        // If two checkpoint roles share a frontier, retain the stronger rewrite provenance.
+        return lhs.rewrite < rhs.rewrite;
+    });
 
     std::vector<SlotCheckpoint> out;
     out.reserve(frontiers.size());
-    for (const std::uint32_t frontier : frontiers) {
-        if (frontier == 0 || frontier > depth) { continue; }
+    for (const CheckpointFrontier candidate : frontiers) {
+        if (candidate.frontier == 0 || candidate.frontier > depth) { continue; }
+        if (!out.empty() && out.back().frontier == candidate.frontier) {
+            out.back().rewrite = out.back().rewrite || candidate.rewrite;
+            continue;
+        }
         out.push_back(SlotCheckpoint{
-            frontier, ledger_prefix_digest(
-                          std::span<const TokenId>(sequence.ledger.data(), frontier))});
+            .frontier = candidate.frontier,
+            .session_digest = ledger_prefix_digest(
+                std::span<const TokenId>(sequence.ledger.data(), candidate.frontier)),
+            .rewrite = candidate.rewrite,
+        });
     }
     return out;
 }

@@ -60,6 +60,10 @@ public:
         std::uint32_t blocked_runnable_requests     = 0;
         std::uint32_t stable_scenario_ordinal       = 0;
         std::uint32_t target_budget                 = kTargetBudget;
+        // Private rewrite captures are correctness-critical continuation state. When such a
+        // capture needs pressure, select the least-destructive physically feasible target even
+        // though it has no shared-prefix portfolio value.
+        bool required_private_capture               = false;
     };
 
     struct Result {
@@ -238,7 +242,9 @@ private:
     };
 
     static void validate(const Input& input) {
-        if (input.capture == nullptr || !input.capture->publishes_shared ||
+        if (input.capture == nullptr ||
+            (!input.capture->publishes_shared && !input.required_private_capture) ||
+            (input.required_private_capture && !input.capture->publishes_private) ||
             input.target_budget == 0 || input.target_budget > kTargetBudget ||
             input.private_owners.size() != input.private_owner_ids.size() ||
             input.shared_owners.size() != input.shared_owner_ids.size()) {
@@ -277,6 +283,16 @@ private:
     [[nodiscard]] TransitionValue fold_target(const Input& input,
                                               const PressureTargetAssessment& assessment,
                                               const ContextMachineCostModel& machine_cost) {
+        if (input.required_private_capture) {
+            // There is no shared-publication value to compare for a private rewrite capture.
+            // Reaching a physically feasible pressure target is itself the objective; `better()`
+            // then deterministically prefers fewer degradation units and checkpoint drops.
+            return TransitionValue{
+                .gain      = 1,
+                .positive  = true,
+                .saturated = false,
+            };
+        }
         impact_scratch_.clear();
         for (const PressureCheckpointRecoveryImpact& impact : assessment.checkpoint_impacts) {
             if (checkpoint_policy_for(input.checkpoint_policies, impact.owner, impact.checkpoint) ==
