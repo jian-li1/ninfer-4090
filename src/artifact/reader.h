@@ -148,6 +148,7 @@ public:
     PayloadSpan payload(const ObjectDescriptor& object) const;
     PayloadSpan payload(std::string_view name) const;
     std::size_t read_direct(std::uint64_t absolute_offset, std::span<std::byte> destination) const;
+    void warm_page_cache() const;
 
 private:
     struct Impl;

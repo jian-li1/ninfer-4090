@@ -110,6 +110,7 @@ ConstructedTarget construct_registered(const EngineOptions& options, DeviceConte
     (void)runtime::resolve_kv_capacity(options.kv_capacity, curve, preflight_runtime_bytes);
     target_plan_phase.complete();
 
+    reader.warm_page_cache();
     auto materialized = artifact::materialize(reader, load_plan.materialization(), device,
                                               &options.startup_observer);
     const artifact::MaterializationStats stats = materialized.stats();

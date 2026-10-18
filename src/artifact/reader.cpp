@@ -276,9 +276,19 @@ public:
                 throw std::system_error(error, std::generic_category(), "mmap " + path.string());
             }
         }
-        fd_   = fd;
-        data_ = static_cast<const std::byte*>(mapping);
-        size_ = size;
+        const int direct_fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_DIRECT);
+        if (direct_fd < 0) {
+            const int error = errno;
+            if (mapping != nullptr) { ::munmap(mapping, size); }
+            ::close(fd);
+            throw std::system_error(error, std::generic_category(),
+                                    "open direct " + path.string());
+        }
+
+        fd_        = fd;
+        direct_fd_ = direct_fd;
+        data_      = static_cast<const std::byte*>(mapping);
+        size_      = size;
 #endif
     }
 
@@ -290,6 +300,7 @@ public:
         if (mapping_file_ != INVALID_HANDLE_VALUE) { ::CloseHandle(mapping_file_); }
 #else
         if (data_ != nullptr) { ::munmap(const_cast<std::byte*>(data_), size_); }
+        if (direct_fd_ >= 0) { ::close(direct_fd_); }
         if (fd_ >= 0) { ::close(fd_); }
 #endif
     }
@@ -340,25 +351,90 @@ public:
             throw ArtifactError("direct artifact read exceeds platform I/O limits");
         }
 
+        const bool resident = range_resident(absolute_offset, destination.size());
+        const int read_fd   = resident ? fd_ : direct_fd_;
+        const char* label   = resident ? "cached artifact read" : "direct artifact read";
+
         ssize_t bytes = -1;
         do {
-            bytes = ::pread(fd_, destination.data(), destination.size(),
+            bytes = ::pread(read_fd, destination.data(), destination.size(),
                             static_cast<off_t>(absolute_offset));
         } while (bytes < 0 && errno == EINTR);
         if (bytes < 0) {
-            throw std::system_error(errno, std::generic_category(), "direct artifact read");
+            throw std::system_error(errno, std::generic_category(), label);
         }
         return static_cast<std::size_t>(bytes);
 #endif
     }
 
+    void warm_page_cache() const {
+#ifdef _WIN32
+        // Windows weight reads already use the buffered file handle. Touch the mapped
+        // pages so the artifact is resident before GPU materialization begins.
+        constexpr std::size_t kWarmStride = 4096;
+        volatile std::byte sink{};
+        for (std::size_t offset = 0; offset < size_; offset += kWarmStride) {
+            sink ^= data_[offset];
+        }
+        if (size_ != 0) { sink ^= data_[size_ - 1]; }
+        (void)sink;
+#else
+        constexpr std::size_t kWarmChunkBytes = 8ULL * 1024ULL * 1024ULL;
+        std::vector<std::byte> buffer(kWarmChunkBytes);
+        (void)::posix_fadvise(fd_, 0, 0, POSIX_FADV_SEQUENTIAL);
+
+        std::uint64_t offset = 0;
+        while (offset < size_) {
+            const std::size_t request = static_cast<std::size_t>(
+                std::min<std::uint64_t>(kWarmChunkBytes, size_ - offset));
+            ssize_t bytes = -1;
+            do {
+                bytes = ::pread(fd_, buffer.data(), request, static_cast<off_t>(offset));
+            } while (bytes < 0 && errno == EINTR);
+            if (bytes < 0) {
+                throw std::system_error(errno, std::generic_category(),
+                                        "artifact page-cache warmup");
+            }
+            if (bytes == 0) {
+                throw ArtifactError("artifact page-cache warmup reached unexpected end of file");
+            }
+            offset += static_cast<std::uint64_t>(bytes);
+        }
+#endif
+    }
+
 private:
+#ifndef _WIN32
+    bool range_resident(std::uint64_t absolute_offset, std::size_t bytes) const {
+        if (bytes == 0) { return true; }
+        if (absolute_offset > size_ || bytes > size_ - static_cast<std::size_t>(absolute_offset)) {
+            return false;
+        }
+
+        const long page_size_long = ::sysconf(_SC_PAGESIZE);
+        if (page_size_long <= 0) { return false; }
+        const auto page_size = static_cast<std::size_t>(page_size_long);
+        const auto offset    = static_cast<std::size_t>(absolute_offset);
+        const auto begin     = offset / page_size * page_size;
+        const auto end       = ((offset + bytes - 1) / page_size + 1) * page_size;
+        const auto length    = std::min(end, size_) - begin;
+        const auto pages     = (length + page_size - 1) / page_size;
+
+        std::vector<unsigned char> residency(pages);
+        void* address = const_cast<std::byte*>(data_ + begin);
+        if (::mincore(address, length, residency.data()) != 0) { return false; }
+        return std::all_of(residency.begin(), residency.end(),
+                           [](unsigned char state) { return (state & 1U) != 0; });
+    }
+#endif
+
 #ifdef _WIN32
     HANDLE mapping_file_       = INVALID_HANDLE_VALUE;
     HANDLE direct_file_        = INVALID_HANDLE_VALUE;
     HANDLE mapping_            = nullptr;
 #else
-    int fd_                = -1;
+    int fd_        = -1;
+    int direct_fd_ = -1;
 #endif
     const std::byte* data_ = nullptr;
     std::size_t size_      = 0;
@@ -504,5 +580,7 @@ std::size_t Reader::read_direct(std::uint64_t absolute_offset,
                                 std::span<std::byte> destination) const {
     return impl_->file.read_direct(absolute_offset, destination);
 }
+
+void Reader::warm_page_cache() const { impl_->file.warm_page_cache(); }
 
 } // namespace ninfer::artifact
